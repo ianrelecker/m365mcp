@@ -1,6 +1,6 @@
-# Claude M365 MCP
+# M365 MCP
 
-Local Claude Desktop MCP server for one Microsoft 365 user. It lets Claude call Microsoft Graph with that user's delegated permissions, including any shared or delegated mailboxes and calendars the user already has access to.
+Local Desktop MCP server for one Microsoft 365 user. It lets Claude call Microsoft Graph with that user's delegated permissions, including any shared or delegated mailboxes and calendars the user already has access to.
 
 This project only does one auth flow:
 
