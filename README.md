@@ -28,7 +28,7 @@ Create a single-tenant app registration for local use.
 Recommended settings:
 
 - Platform: `Web`
-- Redirect URI: `http://127.0.0.1:8787/auth/microsoft/callback`
+- Redirect URI: `http://localhost:8787/auth/microsoft/callback`
 - Supported account type: `Accounts in this organizational directory only`
 
 Add delegated Microsoft Graph permissions:
@@ -51,7 +51,7 @@ Copy `.env.example` to `.env` and fill in the values.
 Important values:
 
 - `LOCAL_BASE_URL`
-  Optional. Defaults to `http://127.0.0.1:8787`.
+  Optional. Defaults to `http://localhost:8787`.
 - `TOKEN_ENCRYPTION_KEY`
   Base64-encoded 32 byte key used for encrypted Microsoft token storage.
 
@@ -87,7 +87,7 @@ node dist/index.js
 Open:
 
 ```text
-http://127.0.0.1:8787/auth/microsoft/start
+http://localhost:8787/auth/microsoft/start
 ```
 
 Sign in with the one Microsoft 365 user you want this server to act as.
@@ -112,7 +112,7 @@ Then configure Claude Desktop to launch the local stdio server. Example config:
       "args": ["C:\\path\\to\\claude-m365-mcp\\dist\\index.js"],
       "env": {
         "PORT": "8787",
-        "LOCAL_BASE_URL": "http://127.0.0.1:8787",
+        "LOCAL_BASE_URL": "http://localhost:8787",
         "MICROSOFT_TENANT_ID": "your-tenant-id",
         "MICROSOFT_CLIENT_ID": "your-client-id",
         "MICROSOFT_CLIENT_SECRET": "your-client-secret",
@@ -127,7 +127,7 @@ Then configure Claude Desktop to launch the local stdio server. Example config:
 After Claude Desktop launches the MCP server, the local helper page is available at:
 
 ```text
-http://127.0.0.1:8787/
+http://localhost:8787/
 ```
 
 That page lets you connect or disconnect Microsoft and check status.
@@ -137,7 +137,7 @@ That page lets you connect or disconnect Microsoft and check status.
 - This project works on Windows. For your case, Windows is a fine target if Claude Desktop is also running on Windows.
 - Install Node.js 20 or newer and make sure `node` and `pnpm` are on your `PATH`.
 - If Claude Desktop cannot find `node`, replace `"command": "node"` with the full path to `node.exe`, for example `C:\\Program Files\\nodejs\\node.exe`.
-- The Microsoft redirect URI stays the same on Windows: `http://127.0.0.1:8787/auth/microsoft/callback`.
+- The Microsoft redirect URI stays the same on Windows: `http://localhost:8787/auth/microsoft/callback`.
 - Keep the helper app bound to localhost. You do not need IIS, Linux, WSL, or a public web server for Claude Desktop local MCP.
 
 ## Notes
@@ -147,5 +147,3 @@ That page lets you connect or disconnect Microsoft and check status.
 - Shared/delegated mailbox discovery is not automatic. Pass the mailbox address in the tool input when needed.
 - No public HTTPS endpoint is required.
 > Local OAuth redirect URI: `http://localhost:8787/auth/microsoft/callback`
->
-> If you are running this on Windows, use `localhost` rather than `127.0.0.1` in both Azure App Registration and your local `.env`/`LOCAL_BASE_URL` configuration.
