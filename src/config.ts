@@ -11,6 +11,11 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function optionalEnv(name: string): string | undefined {
+  const value = process.env[name];
+  return value ? value : undefined;
+}
+
 function optionalCommaList(value: string | undefined): string[] {
   if (!value) {
     return [];
@@ -48,7 +53,7 @@ export const config = {
   microsoft: {
     tenantId: requireEnv("MICROSOFT_TENANT_ID"),
     clientId: requireEnv("MICROSOFT_CLIENT_ID"),
-    clientSecret: requireEnv("MICROSOFT_CLIENT_SECRET"),
+    clientSecret: optionalEnv("MICROSOFT_CLIENT_SECRET"),
     redirectUri: new URL("/auth/microsoft/callback", localBaseUrl).toString(),
     scopes: [
       "openid",
