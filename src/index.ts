@@ -160,7 +160,7 @@ app.get("/auth/microsoft/disconnect", async (_req, res) => {
 });
 
 async function main(): Promise<void> {
-  app.listen(config.port, "127.0.0.1", () => {
+  app.listen(config.port, "localhost", () => {
     console.error(`Claude M365 MCP local helper listening on port ${config.port}`);
     console.error(`Local helper URL: ${config.localBaseUrl.toString()}`);
     console.error(`Microsoft callback URI: ${config.microsoft.redirectUri}`);

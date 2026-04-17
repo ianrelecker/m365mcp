@@ -146,3 +146,6 @@ That page lets you connect or disconnect Microsoft and check status.
 - This is for Claude Desktop local MCP, not `claude.ai` remote connectors.
 - Shared/delegated mailbox discovery is not automatic. Pass the mailbox address in the tool input when needed.
 - No public HTTPS endpoint is required.
+> Local OAuth redirect URI: `http://localhost:8787/auth/microsoft/callback`
+>
+> If you are running this on Windows, use `localhost` rather than `127.0.0.1` in both Azure App Registration and your local `.env`/`LOCAL_BASE_URL` configuration.

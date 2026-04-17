@@ -40,7 +40,7 @@ function parseUrl(name: string): URL {
 const port = Number.parseInt(process.env.PORT ?? "8787", 10);
 const localBaseUrl = process.env.LOCAL_BASE_URL
   ? parseUrl("LOCAL_BASE_URL")
-  : new URL(`http://127.0.0.1:${port}`);
+  : new URL(`http://localhost:${port}`);
 
 export const config = {
   port,
