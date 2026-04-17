@@ -25,11 +25,12 @@ Every mail/calendar tool accepts an optional `mailbox` argument. Leave it blank 
 
 Create a single-tenant app registration for local use.
 
-Recommended settings:
+Recommended settings for a new local Claude Desktop install:
 
-- Platform: `Web`
-- Redirect URI: `http://localhost:8787/auth/microsoft/callback`
+- Platform: `Mobile and desktop applications`
+- Custom redirect URI: `http://localhost:8787/auth/microsoft/callback`
 - Supported account type: `Accounts in this organizational directory only`
+- Advanced setting: `Allow public client flows = Yes`
 
 Add delegated Microsoft Graph permissions:
 
@@ -44,6 +45,8 @@ Add delegated Microsoft Graph permissions:
 
 If your tenant restricts user consent, grant admin consent for the enterprise app.
 
+If you already have a `Web` platform registration with a client secret, this server still supports it. For a local-only Desktop install, though, the public-client PKCE setup above is the safer default because it avoids storing `MICROSOFT_CLIENT_SECRET` on the machine.
+
 ## 2. Local config
 
 Copy `.env.example` to `.env` and fill in the values.
@@ -52,6 +55,8 @@ Important values:
 
 - `LOCAL_BASE_URL`
   Optional. Defaults to `http://localhost:8787`.
+- `MICROSOFT_CLIENT_SECRET`
+  Optional. Leave this blank for the recommended public-client PKCE setup. Only set it if you intentionally keep a confidential-client `Web` app registration.
 - `TOKEN_ENCRYPTION_KEY`
   Base64-encoded 32 byte key used for encrypted Microsoft token storage.
 
@@ -115,7 +120,6 @@ Then configure Claude Desktop to launch the local stdio server. Example config:
         "LOCAL_BASE_URL": "http://localhost:8787",
         "MICROSOFT_TENANT_ID": "your-tenant-id",
         "MICROSOFT_CLIENT_ID": "your-client-id",
-        "MICROSOFT_CLIENT_SECRET": "your-client-secret",
         "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
         "KNOWN_MAILBOXES": "shared@company.com"
       }
@@ -140,10 +144,16 @@ That page lets you connect or disconnect Microsoft and check status.
 - The Microsoft redirect URI stays the same on Windows: `http://localhost:8787/auth/microsoft/callback`.
 - Keep the helper app bound to localhost. You do not need IIS, Linux, WSL, or a public web server for Claude Desktop local MCP.
 
+## Security Notes
+
+- `.env`, `.env.local`, and `.tokens/` are local-only files and are ignored by git.
+- `TOKEN_ENCRYPTION_KEY` encrypts the saved Microsoft token cache at rest. If you rotate or lose it, delete `.tokens/microsoft-graph-token.json` and reconnect Microsoft.
+- The recommended local setup is now public-client OAuth with PKCE, which removes the need to store `MICROSOFT_CLIENT_SECRET`.
+- If you keep using a confidential-client `Web` app registration, treat `MICROSOFT_CLIENT_SECRET` like any other local credential and do not place it in shared configs or screenshots.
+
 ## Notes
 
 - This is intentionally scoped for one user, not multi-tenant SaaS.
 - This is for Claude Desktop local MCP, not `claude.ai` remote connectors.
 - Shared/delegated mailbox discovery is not automatic. Pass the mailbox address in the tool input when needed.
 - No public HTTPS endpoint is required.
-> Local OAuth redirect URI: `http://localhost:8787/auth/microsoft/callback`
