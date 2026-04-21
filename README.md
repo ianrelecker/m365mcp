@@ -1,10 +1,11 @@
 # M365 MCP
 
-Local Desktop MCP server for one Microsoft 365 user. It lets Claude call Microsoft Graph with that user's delegated permissions, including any shared or delegated mailboxes and calendars the user already has access to.
+Local MCP server for one Microsoft 365 user. It lets Claude call Microsoft Graph with that user's delegated permissions, including shared or delegated mailboxes and calendars the user already has access to.
 
-This project only does one auth flow:
+This Python port runs with `uv` and the official MCP Python SDK. It starts two things in one process:
 
-- This local server -> Microsoft 365: delegated OAuth against Microsoft Entra / Graph
+- a stdio MCP server for Claude/Desktop-style clients
+- a localhost-only helper web app for Microsoft OAuth and status checks
 
 ## What it exposes
 
@@ -63,28 +64,33 @@ Important values:
 Generate `TOKEN_ENCRYPTION_KEY` with:
 
 ```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+python3 -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
-## 3. Run it
+## 3. Install and run
 
-Install deps:
+Install dependencies with `uv`:
 
 ```bash
-pnpm install
+uv sync
 ```
 
-Development:
+Run the stdio MCP server:
 
 ```bash
-pnpm dev
+uv run mcp run src/m365_mcp/server.py
 ```
 
-Production build:
+You can also run it directly without the MCP CLI:
 
 ```bash
-pnpm build
-node dist/index.js
+uv run python -m m365_mcp.server
+```
+
+When the server starts, the local helper page is available at:
+
+```text
+http://localhost:8787/
 ```
 
 ## 4. Connect Microsoft
@@ -99,12 +105,12 @@ Sign in with the one Microsoft 365 user you want this server to act as.
 
 After this, the server keeps that user's Microsoft refresh token in `.tokens/microsoft-graph-token.json`, encrypted with `TOKEN_ENCRYPTION_KEY`.
 
-## 5. Add it to Claude Desktop as a local MCP server
+## 5. Install into Claude Desktop
 
-Build first:
+Use the MCP CLI to install the server into Claude Desktop:
 
 ```bash
-pnpm build
+uv run mcp install src/m365_mcp/server.py -f .env --name "m365"
 ```
 
 Then configure Claude Desktop to launch the local stdio server. Example config:
@@ -128,21 +134,21 @@ Then configure Claude Desktop to launch the local stdio server. Example config:
 }
 ```
 
-After Claude Desktop launches the MCP server, the local helper page is available at:
+## 6. Run tests
 
-```text
-http://localhost:8787/
+Install dev dependencies and run the test suite:
+
+```bash
+uv sync --extra dev
+uv run pytest
 ```
-
-That page lets you connect or disconnect Microsoft and check status.
 
 ## Windows Notes
 
-- This project works on Windows. For your case, Windows is a fine target if Claude Desktop is also running on Windows.
-- Install Node.js 20 or newer and make sure `node` and `pnpm` are on your `PATH`.
-- If Claude Desktop cannot find `node`, replace `"command": "node"` with the full path to `node.exe`, for example `C:\\Program Files\\nodejs\\node.exe`.
+- This project works on Windows. If Claude Desktop is running on Windows, this is a fine target.
+- Install `uv`. It can manage the required Python version for you.
 - The Microsoft redirect URI stays the same on Windows: `http://localhost:8787/auth/microsoft/callback`.
-- Keep the helper app bound to localhost. You do not need IIS, Linux, WSL, or a public web server for Claude Desktop local MCP.
+- Keep the helper app bound to localhost. You do not need IIS, Linux, WSL, or a public web server for local MCP use.
 
 ## Security Notes
 
@@ -154,6 +160,7 @@ That page lets you connect or disconnect Microsoft and check status.
 ## Notes
 
 - This is intentionally scoped for one user, not multi-tenant SaaS.
-- This is for Claude Desktop local MCP, not `claude.ai` remote connectors.
+- This is for local MCP clients, not `claude.ai` remote connectors.
 - Shared/delegated mailbox discovery is not automatic. Pass the mailbox address in the tool input when needed.
 - No public HTTPS endpoint is required.
+- The Python runtime requires Python 3.10 or newer. `uv` can download a compatible interpreter automatically when needed.

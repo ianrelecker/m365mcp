@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+import httpx
+import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
+
+from m365_mcp.models import (
+    AccountInfo,
+    AuthStatusResult,
+    CalendarCreateEventResult,
+    CalendarDateTime,
+    CalendarEvent,
+    MailCreateDraftResult,
+    MessageBody,
+    MessageSummary,
+    MicrosoftConnectionStatus,
+)
+from m365_mcp.server import RuntimeServices, create_mcp_server
+
+
+class StubAuthService:
+    async def get_status(self) -> MicrosoftConnectionStatus:
+        return MicrosoftConnectionStatus(
+            connected=True,
+            account=AccountInfo(preferredUsername="user@example.com"),
+            expiresAt=1712345678901,
+            knownMailboxes=["shared@example.com"],
+        )
+
+
+class StubGraphClient:
+    def __init__(self) -> None:
+        self.last_from: str | None = None
+
+    async def list_messages(self, **kwargs):
+        raise AssertionError("Not expected in this test")
+
+    async def search_messages(self, **kwargs):
+        raise AssertionError("Not expected in this test")
+
+    async def get_message(self, **kwargs):
+        raise AssertionError("Not expected in this test")
+
+    async def list_drafts(self, **kwargs):
+        raise AssertionError("Not expected in this test")
+
+    async def create_draft(self, **kwargs) -> MailCreateDraftResult:
+        self.last_from = kwargs["from_"]
+        return MailCreateDraftResult(
+            mailbox=kwargs["mailbox"] or "me",
+            draft=MessageSummary(
+                id="draft-1",
+                subject=kwargs["subject"],
+                from_=kwargs["from_"],
+                receivedDateTime=None,
+                sentDateTime=None,
+                bodyPreview="Draft preview",
+                webLink=None,
+                isDraft=True,
+                conversationId=None,
+            ),
+        )
+
+    async def send_draft(self, **kwargs):
+        raise AssertionError("Not expected in this test")
+
+    async def move_message(self, **kwargs):
+        raise AssertionError("Not expected in this test")
+
+    async def list_events(self, **kwargs):
+        raise AssertionError("Not expected in this test")
+
+    async def create_event(self, **kwargs) -> CalendarCreateEventResult:
+        return CalendarCreateEventResult(
+            mailbox=kwargs["mailbox"] or "me",
+            event=CalendarEvent(
+                id="event-1",
+                subject=kwargs["subject"],
+                webLink=None,
+                start=CalendarDateTime(dateTime=kwargs["start"], timeZone=kwargs["timeZone"]),
+                end=CalendarDateTime(dateTime=kwargs["end"], timeZone=kwargs["timeZone"]),
+                location=kwargs["location"],
+                attendees=[],
+                bodyPreview="",
+                body=MessageBody(contentType="text", content=""),
+            ),
+        )
+
+
+@pytest.mark.anyio
+async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_factory) -> None:
+    graph = StubGraphClient()
+    http_client = httpx.AsyncClient()
+    runtime = RuntimeServices(
+        config=config_factory(localBaseUrl="http://localhost:8787"),
+        microsoft_auth=StubAuthService(),
+        graph=graph,
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(server, raise_exceptions=True) as session:
+        tools = await session.list_tools()
+        assert {tool.name for tool in tools.tools} == {
+            "auth_status",
+            "mail_list",
+            "mail_search",
+            "mail_get",
+            "mail_list_drafts",
+            "mail_create_draft",
+            "mail_send_draft",
+            "mail_move",
+            "calendar_list_events",
+            "calendar_create_event",
+        }
+
+        auth_status = await session.call_tool("auth_status", {})
+        assert auth_status.structuredContent == AuthStatusResult(
+            connected=True,
+            account=AccountInfo(preferredUsername="user@example.com"),
+            expiresAt=1712345678901,
+            knownMailboxes=["shared@example.com"],
+            localStatusUrl="http://localhost:8787",
+            microsoftConnectUrl="http://localhost:8787/auth/microsoft/start",
+            microsoftDisconnectUrl="http://localhost:8787/auth/microsoft/disconnect",
+        ).model_dump(mode="json", by_alias=True)
+
+        draft = await session.call_tool(
+            "mail_create_draft",
+            {
+                "subject": "Hello",
+                "body": "Draft body",
+                "mailbox": "shared@example.com",
+                "to": ["a@example.com"],
+                "from": "delegated@example.com",
+            },
+        )
+        assert draft.structuredContent["draft"]["from"] == "delegated@example.com"
+        assert graph.last_from == "delegated@example.com"
+
+        event = await session.call_tool(
+            "calendar_create_event",
+            {
+                "subject": "Planning",
+                "start": "2026-04-22T16:00:00",
+                "end": "2026-04-22T17:00:00",
+                "mailbox": "shared@example.com",
+            },
+        )
+        assert event.structuredContent["event"]["subject"] == "Planning"
+
+    await http_client.aclose()

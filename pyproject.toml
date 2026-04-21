@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-m365-mcp"
+version = "0.1.0"
+description = "Local MCP server for one Microsoft 365 user with delegated Microsoft Graph access."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "cryptography>=42.0.0",
+  "httpx>=0.27.0",
+  "mcp[cli]>=1.27.0",
+  "python-dotenv>=1.0.1",
+  "starlette>=0.37.2",
+  "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[project.scripts]
+m365-mcp = "m365_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/m365_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
