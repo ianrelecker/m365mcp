@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import type { AppConfig } from "./config.js";
 import { EncryptedFileStore } from "./token-store.js";
@@ -38,9 +38,16 @@ type TokenResponse = {
   error_description?: string;
 };
 
+type PendingAuthorization = {
+  codeVerifier: string;
+  createdAt: number;
+};
+
+const PENDING_AUTH_TTL_MS = 10 * 60 * 1000;
+
 export class MicrosoftAuthService {
   private readonly tokenStore: EncryptedFileStore<StoredMicrosoftTokens>;
-  private pendingState: string | null = null;
+  private readonly pendingAuthorizations = new Map<string, PendingAuthorization>();
 
   constructor(private readonly config: AppConfig) {
     this.tokenStore = new EncryptedFileStore<StoredMicrosoftTokens>(
@@ -50,8 +57,15 @@ export class MicrosoftAuthService {
   }
 
   buildAuthorizationUrl(): string {
+    this.pruneExpiredPendingAuthorizations();
+
     const state = randomUUID();
-    this.pendingState = state;
+    const codeVerifier = this.createCodeVerifier();
+    this.pendingAuthorizations.set(state, {
+      codeVerifier,
+      createdAt: Date.now(),
+    });
+
     const authorizeUrl = new URL(
       `https://login.microsoftonline.com/${this.config.microsoft.tenantId}/oauth2/v2.0/authorize`,
     );
@@ -62,6 +76,11 @@ export class MicrosoftAuthService {
     authorizeUrl.searchParams.set("response_mode", "query");
     authorizeUrl.searchParams.set("scope", this.config.microsoft.scopes.join(" "));
     authorizeUrl.searchParams.set("state", state);
+    authorizeUrl.searchParams.set(
+      "code_challenge",
+      this.createCodeChallenge(codeVerifier),
+    );
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
 
     return authorizeUrl.toString();
   }
@@ -82,17 +101,20 @@ export class MicrosoftAuthService {
       throw new Error("Microsoft callback is missing the code or state parameter");
     }
 
-    if (!this.pendingState || params.state !== this.pendingState) {
-      throw new Error("Microsoft callback state was invalid");
+    this.pruneExpiredPendingAuthorizations();
+    const pendingAuthorization = this.pendingAuthorizations.get(params.state);
+    if (!pendingAuthorization) {
+      throw new Error("Microsoft callback state was invalid or expired");
     }
 
-    this.pendingState = null;
+    this.pendingAuthorizations.delete(params.state);
 
     const tokenResponse = await this.fetchToken({
       grant_type: "authorization_code",
       code: params.code,
       redirect_uri: this.config.microsoft.redirectUri,
       scope: this.config.microsoft.scopes.join(" "),
+      code_verifier: pendingAuthorization.codeVerifier,
     });
 
     if (!tokenResponse.refresh_token) {
@@ -161,9 +183,12 @@ export class MicrosoftAuthService {
     const tokenUrl = `https://login.microsoftonline.com/${this.config.microsoft.tenantId}/oauth2/v2.0/token`;
     const body = new URLSearchParams({
       client_id: this.config.microsoft.clientId,
-      client_secret: this.config.microsoft.clientSecret,
       ...payload,
     });
+
+    if (this.config.microsoft.clientSecret) {
+      body.set("client_secret", this.config.microsoft.clientSecret);
+    }
 
     const response = await fetch(tokenUrl, {
       method: "POST",
@@ -182,6 +207,23 @@ export class MicrosoftAuthService {
     }
 
     return json;
+  }
+
+  private createCodeVerifier(): string {
+    return randomBytes(32).toString("base64url");
+  }
+
+  private createCodeChallenge(codeVerifier: string): string {
+    return createHash("sha256").update(codeVerifier).digest("base64url");
+  }
+
+  private pruneExpiredPendingAuthorizations(): void {
+    const now = Date.now();
+    for (const [state, pendingAuthorization] of this.pendingAuthorizations.entries()) {
+      if (pendingAuthorization.createdAt + PENDING_AUTH_TTL_MS < now) {
+        this.pendingAuthorizations.delete(state);
+      }
+    }
   }
 
   private async saveTokenResponse(

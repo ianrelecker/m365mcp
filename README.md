@@ -26,11 +26,12 @@ Every mail/calendar tool accepts an optional `mailbox` argument. Leave it blank 
 
 Create a single-tenant app registration for local use.
 
-Recommended settings:
+Recommended settings for a new local Claude Desktop install:
 
-- Platform: `Web`
-- Redirect URI: `http://localhost:8787/auth/microsoft/callback`
+- Platform: `Mobile and desktop applications`
+- Custom redirect URI: `http://localhost:8787/auth/microsoft/callback`
 - Supported account type: `Accounts in this organizational directory only`
+- Advanced setting: `Allow public client flows = Yes`
 
 Add delegated Microsoft Graph permissions:
 
@@ -45,6 +46,8 @@ Add delegated Microsoft Graph permissions:
 
 If your tenant restricts user consent, grant admin consent for the enterprise app.
 
+If you already have a `Web` platform registration with a client secret, this server still supports it. For a local-only Desktop install, though, the public-client PKCE setup above is the safer default because it avoids storing `MICROSOFT_CLIENT_SECRET` on the machine.
+
 ## 2. Local config
 
 Copy `.env.example` to `.env` and fill in the values.
@@ -53,6 +56,8 @@ Important values:
 
 - `LOCAL_BASE_URL`
   Optional. Defaults to `http://localhost:8787`.
+- `MICROSOFT_CLIENT_SECRET`
+  Optional. Leave this blank for the recommended public-client PKCE setup. Only set it if you intentionally keep a confidential-client `Web` app registration.
 - `TOKEN_ENCRYPTION_KEY`
   Base64-encoded 32 byte key used for encrypted Microsoft token storage.
 
@@ -108,7 +113,26 @@ Use the MCP CLI to install the server into Claude Desktop:
 uv run mcp install src/m365_mcp/server.py -f .env --name "m365"
 ```
 
-If you prefer, you can point Claude Desktop at the same `uv run mcp run ...` entrypoint manually, but the install command above is the easiest path and keeps the server on the FastMCP-supported workflow.
+Then configure Claude Desktop to launch the local stdio server. Example config:
+
+```json
+{
+  "mcpServers": {
+    "m365": {
+      "command": "node",
+      "args": ["C:\\path\\to\\claude-m365-mcp\\dist\\index.js"],
+      "env": {
+        "PORT": "8787",
+        "LOCAL_BASE_URL": "http://localhost:8787",
+        "MICROSOFT_TENANT_ID": "your-tenant-id",
+        "MICROSOFT_CLIENT_ID": "your-client-id",
+        "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
+        "KNOWN_MAILBOXES": "shared@company.com"
+      }
+    }
+  }
+}
+```
 
 ## 6. Run tests
 
@@ -125,6 +149,13 @@ uv run pytest
 - Install `uv`. It can manage the required Python version for you.
 - The Microsoft redirect URI stays the same on Windows: `http://localhost:8787/auth/microsoft/callback`.
 - Keep the helper app bound to localhost. You do not need IIS, Linux, WSL, or a public web server for local MCP use.
+
+## Security Notes
+
+- `.env`, `.env.local`, and `.tokens/` are local-only files and are ignored by git.
+- `TOKEN_ENCRYPTION_KEY` encrypts the saved Microsoft token cache at rest. If you rotate or lose it, delete `.tokens/microsoft-graph-token.json` and reconnect Microsoft.
+- The recommended local setup is now public-client OAuth with PKCE, which removes the need to store `MICROSOFT_CLIENT_SECRET`.
+- If you keep using a confidential-client `Web` app registration, treat `MICROSOFT_CLIENT_SECRET` like any other local credential and do not place it in shared configs or screenshots.
 
 ## Notes
 
