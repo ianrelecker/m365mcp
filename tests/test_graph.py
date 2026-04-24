@@ -167,6 +167,16 @@ async def test_create_send_and_move_message() -> None:
     create_body = requests[0][2]
     assert create_body is not None
     assert create_body["from"] == {"emailAddress": {"address": "delegated@example.com"}}
+    assert create_body["body"] == {"contentType": "HTML", "content": "Hello"}
+    assert create_body["toRecipients"] == [
+        {"emailAddress": {"address": "a@example.com"}}
+    ]
+    assert create_body["ccRecipients"] == [
+        {"emailAddress": {"address": "b@example.com"}}
+    ]
+    assert create_body["bccRecipients"] == [
+        {"emailAddress": {"address": "c@example.com"}}
+    ]
 
     move_body = requests[-1][2]
     assert move_body == {"destinationId": "folder-archive"}
@@ -175,8 +185,53 @@ async def test_create_send_and_move_message() -> None:
 
 
 @pytest.mark.anyio
+async def test_create_draft_omits_empty_optional_fields() -> None:
+    captured_body: dict[str, object] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_body
+
+        if request.method == "POST" and request.url.path.endswith("/messages"):
+            captured_body = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "draft-minimal",
+                    "subject": "Minimal",
+                    "bodyPreview": "Draft preview",
+                    "isDraft": True,
+                },
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    draft = await graph.create_draft(
+        subject="Minimal",
+        to=[],
+        cc=None,
+        bcc=None,
+        body="Hello",
+        bodyType="text",
+        from_=None,
+    )
+
+    assert draft.draft.id == "draft-minimal"
+    assert captured_body == {
+        "subject": "Minimal",
+        "body": {"contentType": "Text", "content": "Hello"},
+    }
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_list_and_create_events_and_graph_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8")) if request.content else None
+
         if request.url.path.endswith("/calendarView"):
             return httpx.Response(
                 200,
@@ -203,6 +258,13 @@ async def test_list_and_create_events_and_graph_errors() -> None:
             )
 
         if request.url.path.endswith("/calendar/events"):
+            assert body == {
+                "subject": "Created event",
+                "start": {"dateTime": "2026-04-23T16:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-04-23T17:00:00", "timeZone": "UTC"},
+                "attendees": [],
+                "body": {"contentType": "HTML", "content": "Agenda"},
+            }
             return httpx.Response(
                 200,
                 json={
@@ -235,6 +297,8 @@ async def test_list_and_create_events_and_graph_errors() -> None:
         start="2026-04-23T16:00:00",
         end="2026-04-23T17:00:00",
         mailbox="shared@example.com",
+        body="Agenda",
+        bodyType="html",
     )
     assert created.event.id == "event-2"
 
