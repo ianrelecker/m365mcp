@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import contextlib
 import sys
 from collections.abc import Callable, Iterator
@@ -13,11 +11,11 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from .config import AppConfig, load_config
-from .helper_app import create_helper_app
-from .microsoft_auth import MicrosoftAuthService
-from .microsoft_graph import MicrosoftGraphClient
-from .models import (
+from m365_mcp.config import AppConfig, load_config
+from m365_mcp.helper_app import create_helper_app
+from m365_mcp.microsoft_auth import MicrosoftAuthService
+from m365_mcp.microsoft_graph import MicrosoftGraphClient
+from m365_mcp.models import (
     AuthStatusResult,
     CalendarCreateEventResult,
     CalendarListEventsResult,
