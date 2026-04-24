@@ -139,7 +139,7 @@ In that file, replace `C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp` with th
 
 If Claude cannot find `uv`, replace `"command": "uv"` with the full path from `where uv` on Windows.
 
-Do not leave any placeholder values in the config. Values like `your-tenant-id`, `your-client-id`, `your-client-secret-value`, and `your-base64-32-byte-key` must be replaced with the real values from your `.env` setup.
+Keep Microsoft credentials in `.env`; the sample config uses `uv run --env-file .env` so Claude does not need those secrets duplicated in `claude_desktop_config.json`.
 
 ```json
 {
@@ -155,25 +155,18 @@ Do not leave any placeholder values in the config. Values like `your-tenant-id`,
         "--directory",
         "C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp",
         "run",
+        "--env-file",
+        ".env",
         "mcp",
         "run",
         "src/m365_mcp/server.py"
-      ],
-      "env": {
-        "PORT": "8787",
-        "LOCAL_BASE_URL": "http://localhost:8787",
-        "MICROSOFT_TENANT_ID": "your-tenant-id",
-        "MICROSOFT_CLIENT_ID": "your-client-id",
-        "MICROSOFT_CLIENT_SECRET": "your-client-secret-value",
-        "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
-        "KNOWN_MAILBOXES": ""
-      }
+      ]
     }
   }
 }
 ```
 
-If Claude shows `Server disconnected` and the MCP details still show `C:\path\to\m365mcp` or any `your-*` values, the config is still using placeholders. Replace those first, restart Claude Desktop, then open `http://localhost:8787/` to confirm the helper page is running.
+If Claude shows `Server disconnected`, click `View Logs`. If the MCP details still show environment variables like `MICROSOFT_TENANT_ID=your-tenant-id` or `TOKEN_ENCRYPTION_KEY=your-base64-32-byte-key`, the config is still using the old placeholder env block. Remove that block, use `--env-file .env`, restart Claude Desktop, then open `http://localhost:8787/` to confirm the helper page is running.
 
 ## 6. Run tests
 
