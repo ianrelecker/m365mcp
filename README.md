@@ -95,7 +95,7 @@ Install dependencies with `uv`:
 uv sync
 ```
 
-Run the stdio MCP server:
+For a quick manual smoke test, run the stdio MCP server:
 
 ```bash
 uv run mcp run src/m365_mcp/server.py
@@ -112,6 +112,8 @@ When the server starts, the local helper page is available at:
 ```text
 http://localhost:8787/
 ```
+
+Stop this manual command before starting Claude Desktop. Claude launches its own MCP server process, and two copies cannot both own the local helper port.
 
 ## 4. Connect Microsoft
 
@@ -168,7 +170,7 @@ Keep Microsoft credentials in `.env`; the sample config uses `uv run --env-file 
 
 If Claude shows `Server disconnected`, click `View Logs`. If the MCP details still show environment variables like `MICROSOFT_TENANT_ID=your-tenant-id` or `TOKEN_ENCRYPTION_KEY=your-base64-32-byte-key`, the config is still using the old placeholder env block. Remove that block, use `--env-file .env`, restart Claude Desktop, then open `http://localhost:8787/` to confirm the helper page is running.
 
-If the logs include `WinError 10048` or say that only one usage of the socket address is permitted, another process is already using port `8787`. Close the other MCP/server process, or change `PORT`, `LOCAL_BASE_URL`, and the Azure redirect URI to the same alternate localhost port.
+If the logs include `WinError 10048` or say that only one usage of the socket address is permitted, another process is already using port `8787`. This usually means the manual `uv run mcp run ...` smoke test is still running. Stop the manual process, then restart Claude Desktop. Only change `PORT`, `LOCAL_BASE_URL`, and the Azure redirect URI if you intentionally want to use a different localhost port.
 
 ## 6. Run tests
 
