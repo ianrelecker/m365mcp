@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import httpx
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
@@ -152,3 +155,15 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
         assert event.structuredContent["event"]["subject"] == "Planning"
 
     await http_client.aclose()
+
+
+def test_server_file_imports_the_way_mcp_cli_imports_it() -> None:
+    server_path = Path(__file__).parents[1] / "src" / "m365_mcp" / "server.py"
+    spec = importlib.util.spec_from_file_location("mcp_cli_server_import_test", server_path)
+    assert spec is not None
+    assert spec.loader is not None
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.mcp is module.app
