@@ -9,7 +9,7 @@
       "command": "uv",
       "args": [
         "--directory",
-        "C:\\path\\to\\m365mcp",
+        "C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp",
         "run",
         "mcp",
         "run",
@@ -22,7 +22,7 @@
         "MICROSOFT_CLIENT_ID": "your-client-id",
         "MICROSOFT_CLIENT_SECRET": "your-client-secret-value",
         "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
-        "KNOWN_MAILBOXES": "shared@company.com"
+        "KNOWN_MAILBOXES": ""
       }
     }
   }

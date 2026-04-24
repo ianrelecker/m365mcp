@@ -135,9 +135,11 @@ uv run mcp install src/m365_mcp/server.py -f .env --name "m365"
 
 If you prefer to configure Claude Desktop manually, use [claude_desktop_config.json](claude_desktop_config.json) as a starting point. It preserves Claude's default `preferences` block and adds the `m365` MCP server.
 
-In that file, replace `C:\\path\\to\\m365mcp` with the absolute path to this repo. The `--directory` argument is important because Claude may launch `uv` from another working directory, and `uv` needs to find this repo's `pyproject.toml`.
+In that file, replace `C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp` with the absolute path to this repo. The `--directory` argument is important because Claude may launch `uv` from another working directory, and `uv` needs to find this repo's `pyproject.toml`.
 
 If Claude cannot find `uv`, replace `"command": "uv"` with the full path from `where uv` on Windows.
+
+Do not leave any placeholder values in the config. Values like `your-tenant-id`, `your-client-id`, `your-client-secret-value`, and `your-base64-32-byte-key` must be replaced with the real values from your `.env` setup.
 
 ```json
 {
@@ -151,7 +153,7 @@ If Claude cannot find `uv`, replace `"command": "uv"` with the full path from `w
       "command": "uv",
       "args": [
         "--directory",
-        "C:\\path\\to\\m365mcp",
+        "C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp",
         "run",
         "mcp",
         "run",
@@ -164,12 +166,14 @@ If Claude cannot find `uv`, replace `"command": "uv"` with the full path from `w
         "MICROSOFT_CLIENT_ID": "your-client-id",
         "MICROSOFT_CLIENT_SECRET": "your-client-secret-value",
         "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
-        "KNOWN_MAILBOXES": "shared@company.com"
+        "KNOWN_MAILBOXES": ""
       }
     }
   }
 }
 ```
+
+If Claude shows `Server disconnected` and the MCP details still show `C:\path\to\m365mcp` or any `your-*` values, the config is still using placeholders. Replace those first, restart Claude Desktop, then open `http://localhost:8787/` to confirm the helper page is running.
 
 ## 6. Run tests
 
