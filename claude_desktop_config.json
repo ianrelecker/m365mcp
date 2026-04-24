@@ -1,0 +1,29 @@
+{
+  "preferences": {
+    "coworkScheduledTasksEnabled": false,
+    "coworkWebSearchEnabled": true,
+    "ccdScheduledTasksEnabled": false
+  },
+  "mcpServers": {
+    "m365": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "C:\\path\\to\\m365mcp",
+        "run",
+        "mcp",
+        "run",
+        "src/m365_mcp/server.py"
+      ],
+      "env": {
+        "PORT": "8787",
+        "LOCAL_BASE_URL": "http://localhost:8787",
+        "MICROSOFT_TENANT_ID": "your-tenant-id",
+        "MICROSOFT_CLIENT_ID": "your-client-id",
+        "MICROSOFT_CLIENT_SECRET": "your-client-secret-value",
+        "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
+        "KNOWN_MAILBOXES": "shared@company.com"
+      }
+    }
+  }
+}

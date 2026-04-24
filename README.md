@@ -133,18 +133,29 @@ Use the MCP CLI to install the server into Claude Desktop:
 uv run mcp install src/m365_mcp/server.py -f .env --name "m365"
 ```
 
-If you prefer to configure Claude Desktop manually, point it at `uv` and pass the MCP CLI command. Use absolute paths on Windows.
+If you prefer to configure Claude Desktop manually, use [claude_desktop_config.json](claude_desktop_config.json) as a starting point. It preserves Claude's default `preferences` block and adds the `m365` MCP server.
+
+In that file, replace `C:\\path\\to\\m365mcp` with the absolute path to this repo. The `--directory` argument is important because Claude may launch `uv` from another working directory, and `uv` needs to find this repo's `pyproject.toml`.
+
+If Claude cannot find `uv`, replace `"command": "uv"` with the full path from `where uv` on Windows.
 
 ```json
 {
+  "preferences": {
+    "coworkScheduledTasksEnabled": false,
+    "coworkWebSearchEnabled": true,
+    "ccdScheduledTasksEnabled": false
+  },
   "mcpServers": {
     "m365": {
       "command": "uv",
       "args": [
+        "--directory",
+        "C:\\path\\to\\m365mcp",
         "run",
         "mcp",
         "run",
-        "C:\\path\\to\\m365mcp\\src\\m365_mcp\\server.py"
+        "src/m365_mcp/server.py"
       ],
       "env": {
         "PORT": "8787",
