@@ -177,7 +177,7 @@ class MicrosoftGraphClient:
             json_body={
                 "subject": subject,
                 "body": {
-                    "contentType": bodyType,
+                    "contentType": self._graph_body_content_type(bodyType),
                     "content": body,
                 },
                 "toRecipients": self._to_recipients(to),
@@ -307,7 +307,10 @@ class MicrosoftGraphClient:
                     for address in (attendees or [])
                 ],
                 "body": (
-                    {"contentType": bodyType, "content": body}
+                    {
+                        "contentType": self._graph_body_content_type(bodyType),
+                        "content": body,
+                    }
                     if body is not None
                     else None
                 ),
@@ -355,7 +358,7 @@ class MicrosoftGraphClient:
                 method,
                 f"https://graph.microsoft.com/v1.0{path}",
                 headers=request_headers,
-                json=json_body,
+                json=self._omit_none(json_body) if json_body is not None else None,
             )
 
         if response.status_code == 204:
@@ -389,6 +392,26 @@ class MicrosoftGraphClient:
         if not cleaned:
             return None
         return [{"emailAddress": {"address": address}} for address in cleaned]
+
+    def _graph_body_content_type(self, body_type: str) -> str:
+        match body_type.lower():
+            case "html":
+                return "HTML"
+            case "text":
+                return "Text"
+            case _:
+                return body_type
+
+    def _omit_none(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: self._omit_none(nested_value)
+                for key, nested_value in value.items()
+                if nested_value is not None
+            }
+        if isinstance(value, list):
+            return [self._omit_none(item) for item in value]
+        return value
 
     def _map_message_summary(self, message: dict[str, Any]) -> MessageSummary:
         return MessageSummary(
