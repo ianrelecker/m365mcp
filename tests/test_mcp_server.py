@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import socket
 from pathlib import Path
 
 import httpx
@@ -18,7 +19,7 @@ from m365_mcp.models import (
     MessageSummary,
     MicrosoftConnectionStatus,
 )
-from m365_mcp.server import RuntimeServices, create_mcp_server
+from m365_mcp.server import RuntimeServices, _can_bind_localhost, create_mcp_server
 
 
 class StubAuthService:
@@ -167,3 +168,46 @@ def test_server_file_imports_the_way_mcp_cli_imports_it() -> None:
     spec.loader.exec_module(module)
 
     assert module.mcp is module.app
+
+
+def test_can_bind_localhost_detects_busy_port() -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen()
+    try:
+        assert _can_bind_localhost(sock.getsockname()[1]) is False
+    finally:
+        sock.close()
+
+
+@pytest.mark.anyio
+async def test_mcp_server_stays_up_when_helper_port_is_busy(config_factory) -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen()
+    port = sock.getsockname()[1]
+
+    http_client = httpx.AsyncClient()
+    runtime = RuntimeServices(
+        config=config_factory(
+            port=port,
+            localBaseUrl=f"http://localhost:{port}",
+        ),
+        microsoft_auth=StubAuthService(),
+        graph=StubGraphClient(),
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=True,
+    )
+    server = create_mcp_server(runtime)
+
+    try:
+        async with create_connected_server_and_client_session(
+            server,
+            raise_exceptions=True,
+        ) as session:
+            auth_status = await session.call_tool("auth_status", {})
+            assert auth_status.structuredContent["connected"] is True
+    finally:
+        sock.close()
+        await http_client.aclose()

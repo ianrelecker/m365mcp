@@ -26,12 +26,14 @@ Every mail/calendar tool accepts an optional `mailbox` argument. Leave it blank 
 
 Create a single-tenant app registration for local use.
 
-Recommended settings for a new local Claude Desktop install:
+Recommended settings for this implementation:
 
-- Platform: `Mobile and desktop applications`
-- Custom redirect URI: `http://localhost:8787/auth/microsoft/callback`
+- Platform: `Web`
+- Redirect URI: `http://localhost:8787/auth/microsoft/callback`
 - Supported account type: `Accounts in this organizational directory only`
-- Advanced setting: `Allow public client flows = Yes`
+- Advanced setting: `Allow public client flows = No`
+
+Create a client secret under `Certificates & secrets`, then copy the secret `Value` into `.env`. Do not use the `Secret ID`; that looks like a GUID and will fail during token exchange.
 
 Add delegated Microsoft Graph permissions:
 
@@ -46,8 +48,6 @@ Add delegated Microsoft Graph permissions:
 
 If your tenant restricts user consent, grant admin consent for the enterprise app.
 
-If you already have a `Web` platform registration with a client secret, this server still supports it. For a local-only Desktop install, though, the public-client PKCE setup above is the safer default because it avoids storing `MICROSOFT_CLIENT_SECRET` on the machine.
-
 ## 2. Local config
 
 Copy `.env.example` to `.env` and fill in the values.
@@ -57,7 +57,7 @@ Important values:
 - `LOCAL_BASE_URL`
   Optional. Defaults to `http://localhost:8787`.
 - `MICROSOFT_CLIENT_SECRET`
-  Optional. Leave this blank for the recommended public-client PKCE setup. Only set it if you intentionally keep a confidential-client `Web` app registration.
+  Required. Use the Azure client secret `Value`, not the `Secret ID`.
 - `TOKEN_ENCRYPTION_KEY`
   Base64-encoded 32 byte key used for encrypted Microsoft token storage.
 
@@ -69,13 +69,33 @@ python3 -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
 
 ## 3. Install and run
 
+If `uv` is not installed, install it first.
+
+macOS/Linux:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Close and reopen the terminal after installation if `uv` is not found, then verify:
+
+```bash
+uv --version
+```
+
 Install dependencies with `uv`:
 
 ```bash
 uv sync
 ```
 
-Run the stdio MCP server:
+For a quick manual smoke test, run the stdio MCP server:
 
 ```bash
 uv run mcp run src/m365_mcp/server.py
@@ -92,6 +112,8 @@ When the server starts, the local helper page is available at:
 ```text
 http://localhost:8787/
 ```
+
+Stop this manual command before starting Claude Desktop. Claude launches its own MCP server process, and two copies cannot both own the local helper port.
 
 ## 4. Connect Microsoft
 
@@ -113,26 +135,42 @@ Use the MCP CLI to install the server into Claude Desktop:
 uv run mcp install src/m365_mcp/server.py -f .env --name "m365"
 ```
 
-Then configure Claude Desktop to launch the local stdio server. Example config:
+If you prefer to configure Claude Desktop manually, use [claude_desktop_config.json](claude_desktop_config.json) as a starting point. It preserves Claude's default `preferences` block and adds the `m365` MCP server.
+
+In that file, replace `C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp` with the absolute path to this repo. The `--directory` argument is important because Claude may launch `uv` from another working directory, and `uv` needs to find this repo's `pyproject.toml`.
+
+If Claude cannot find `uv`, replace `"command": "uv"` with the full path from `where uv` on Windows.
+
+Keep Microsoft credentials in `.env`; the sample config uses `uv run --env-file .env` so Claude does not need those secrets duplicated in `claude_desktop_config.json`.
 
 ```json
 {
+  "preferences": {
+    "coworkScheduledTasksEnabled": false,
+    "coworkWebSearchEnabled": true,
+    "ccdScheduledTasksEnabled": false
+  },
   "mcpServers": {
     "m365": {
-      "command": "node",
-      "args": ["C:\\path\\to\\claude-m365-mcp\\dist\\index.js"],
-      "env": {
-        "PORT": "8787",
-        "LOCAL_BASE_URL": "http://localhost:8787",
-        "MICROSOFT_TENANT_ID": "your-tenant-id",
-        "MICROSOFT_CLIENT_ID": "your-client-id",
-        "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
-        "KNOWN_MAILBOXES": "shared@company.com"
-      }
+      "command": "uv",
+      "args": [
+        "--directory",
+        "C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp",
+        "run",
+        "--env-file",
+        ".env",
+        "mcp",
+        "run",
+        "src/m365_mcp/server.py"
+      ]
     }
   }
 }
 ```
+
+If Claude shows `Server disconnected`, click `View Logs`. If the MCP details still show environment variables like `MICROSOFT_TENANT_ID=your-tenant-id` or `TOKEN_ENCRYPTION_KEY=your-base64-32-byte-key`, the config is still using the old placeholder env block. Remove that block, use `--env-file .env`, restart Claude Desktop, then open `http://localhost:8787/` to confirm the helper page is running.
+
+If the logs include `WinError 10048` or say that only one usage of the socket address is permitted, another process is already using port `8787`. This usually means the manual `uv run mcp run ...` smoke test is still running. Stop the manual process, then restart Claude Desktop. Only change `PORT`, `LOCAL_BASE_URL`, and the Azure redirect URI if you intentionally want to use a different localhost port.
 
 ## 6. Run tests
 
@@ -146,7 +184,8 @@ uv run pytest
 ## Windows Notes
 
 - This project works on Windows. If Claude Desktop is running on Windows, this is a fine target.
-- Install `uv`. It can manage the required Python version for you.
+- Install `uv` from PowerShell with `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`, then reopen the terminal and run `uv --version`.
+- `uv` can manage the required Python version for you.
 - The Microsoft redirect URI stays the same on Windows: `http://localhost:8787/auth/microsoft/callback`.
 - Keep the helper app bound to localhost. You do not need IIS, Linux, WSL, or a public web server for local MCP use.
 
@@ -154,8 +193,8 @@ uv run pytest
 
 - `.env`, `.env.local`, and `.tokens/` are local-only files and are ignored by git.
 - `TOKEN_ENCRYPTION_KEY` encrypts the saved Microsoft token cache at rest. If you rotate or lose it, delete `.tokens/microsoft-graph-token.json` and reconnect Microsoft.
-- The recommended local setup is now public-client OAuth with PKCE, which removes the need to store `MICROSOFT_CLIENT_SECRET`.
-- If you keep using a confidential-client `Web` app registration, treat `MICROSOFT_CLIENT_SECRET` like any other local credential and do not place it in shared configs or screenshots.
+- This server currently uses a confidential-client `Web` app registration, so `MICROSOFT_CLIENT_SECRET` is required.
+- Treat `MICROSOFT_CLIENT_SECRET` like any other local credential and do not place it in shared configs or screenshots.
 
 ## Notes
 

@@ -1,4 +1,5 @@
 import contextlib
+import socket
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -82,6 +83,18 @@ class _HelperServerRunner:
         self._server: uvicorn.Server | None = None
 
     async def run(self, *, task_status: anyio.abc.TaskStatus[None]) -> None:
+        if not _can_bind_localhost(self._runtime.config.port):
+            print(
+                "Claude M365 MCP local helper was not started because "
+                f"localhost:{self._runtime.config.port} is already in use. "
+                "Close the other process using that port, or set PORT and "
+                "LOCAL_BASE_URL to a different localhost port that also matches "
+                "the Azure redirect URI.",
+                file=sys.stderr,
+            )
+            task_status.started()
+            return
+
         app = create_helper_app(self._runtime.config, self._runtime.microsoft_auth)
         config = uvicorn.Config(
             app,
@@ -129,6 +142,25 @@ class _HelperServerRunner:
     async def stop(self) -> None:
         if self._server is not None:
             self._server.should_exit = True
+
+
+def _can_bind_localhost(port: int) -> bool:
+    addresses: list[tuple[int, tuple[str, int] | tuple[str, int, int, int]]] = [
+        (socket.AF_INET, ("127.0.0.1", port)),
+    ]
+    if socket.has_ipv6:
+        addresses.append((socket.AF_INET6, ("::1", port, 0, 0)))
+
+    for family, address in addresses:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            sock.bind(address)
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    return True
 
 
 def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
