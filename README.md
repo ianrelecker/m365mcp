@@ -168,6 +168,8 @@ Keep Microsoft credentials in `.env`; the sample config uses `uv run --env-file 
 
 If Claude shows `Server disconnected`, click `View Logs`. If the MCP details still show environment variables like `MICROSOFT_TENANT_ID=your-tenant-id` or `TOKEN_ENCRYPTION_KEY=your-base64-32-byte-key`, the config is still using the old placeholder env block. Remove that block, use `--env-file .env`, restart Claude Desktop, then open `http://localhost:8787/` to confirm the helper page is running.
 
+If the logs include `WinError 10048` or say that only one usage of the socket address is permitted, another process is already using port `8787`. Close the other MCP/server process, or change `PORT`, `LOCAL_BASE_URL`, and the Azure redirect URI to the same alternate localhost port.
+
 ## 6. Run tests
 
 Install dev dependencies and run the test suite:
