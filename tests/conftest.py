@@ -61,6 +61,7 @@ def config_factory(
                         "offline_access",
                         "Mail.ReadWrite",
                         "Mail.ReadWrite.Shared",
+                        "Mail.Send",
                         "Mail.Send.Shared",
                         "Calendars.ReadWrite.Shared",
                         "Contacts.ReadWrite.Shared",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -8,13 +9,20 @@ from urllib.parse import quote
 
 import httpx
 
+try:  # pragma: no cover - exercised through dependency-aware tests
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover - pypdf is an optional import at module load
+    PdfReader = None  # type: ignore[assignment]
+
 from .models import (
     AttachmentInfo,
     CalendarAttendee,
     CalendarCreateEventResult,
     CalendarDateTime,
+    CalendarDeleteEventResult,
     CalendarEvent,
     CalendarListEventsResult,
+    CalendarUpdateEventResult,
     CalendarWindow,
     ContactFoldersResult,
     ContactFolderInfo,
@@ -29,6 +37,7 @@ from .models import (
     MailCategoryResult,
     MailCheckInboxResult,
     MailCreateDraftResult,
+    MailFolderMutationResult,
     MailFolderInfo,
     MailFolderTreeNode,
     MailFolderTreeResult,
@@ -38,10 +47,14 @@ from .models import (
     MailListDraftsResult,
     MailListFoldersResult,
     MailListResult,
+    MailListRulesResult,
     MailMoveResult,
     MailResolveFolderResult,
+    MailRuleInfo,
+    MailRuleResult,
     MailSearchResult,
     MailSendDraftResult,
+    MailSendResult,
     MailThreadResult,
     MailUpdateMessageResult,
     MessageBody,
@@ -73,10 +86,15 @@ CONTACT_SELECT = (
     "businessPhones,mobilePhone,emailAddresses"
 )
 CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount"
+MESSAGE_RULE_SELECT = (
+    "id,displayName,sequence,isEnabled,hasError,isReadOnly,"
+    "conditions,actions,exceptions"
+)
 SAFE_ATTACHMENT_CONTENT_TYPES = {
     "application/calendar",
     "application/csv",
     "application/json",
+    "application/pdf",
     "application/xml",
     "text/calendar",
     "text/csv",
@@ -92,6 +110,7 @@ SAFE_ATTACHMENT_EXTENSIONS = {
     ".json",
     ".log",
     ".md",
+    ".pdf",
     ".txt",
     ".tsv",
     ".xml",
@@ -313,6 +332,48 @@ class MicrosoftGraphClient:
             draft=self._map_message_summary(message),
         )
 
+    async def send_mail(
+        self,
+        *,
+        mailbox: str | None = None,
+        subject: str,
+        to: list[str],
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        body: str,
+        bodyType: str = "text",
+        from_: str | None = None,
+        saveToSentItems: bool = True,
+    ) -> MailSendResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        await self._request(
+            f"{base}/sendMail",
+            method="POST",
+            json_body={
+                "message": {
+                    "subject": subject,
+                    "body": {
+                        "contentType": self._graph_body_content_type(bodyType),
+                        "content": body,
+                    },
+                    "toRecipients": self._to_recipients(to),
+                    "ccRecipients": self._to_recipients(cc),
+                    "bccRecipients": self._to_recipients(bcc),
+                    "from": (
+                        {"emailAddress": {"address": from_}} if from_ else None
+                    ),
+                },
+                "saveToSentItems": saveToSentItems,
+            },
+        )
+
+        return MailSendResult(
+            mailbox=normalized_mailbox or "me",
+            subject=subject,
+            sent=True,
+        )
+
     async def send_draft(
         self,
         *,
@@ -444,6 +505,228 @@ class MicrosoftGraphClient:
             folder=folder,
         )
 
+    async def create_mail_folder(
+        self,
+        *,
+        mailbox: str | None = None,
+        displayName: str,
+        parentFolderId: str | None = None,
+        parentFolderPath: str | None = None,
+        isHidden: bool | None = None,
+    ) -> MailFolderMutationResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        resolved_parent_id = parentFolderId
+        if parentFolderPath and not resolved_parent_id:
+            resolved_parent_id = (
+                await self._resolve_mail_folder_by_path(base, parentFolderPath)
+            ).id
+        path = (
+            f"{base}/mailFolders/{quote(resolved_parent_id, safe='')}/childFolders"
+            if resolved_parent_id
+            else f"{base}/mailFolders"
+        )
+        folder = await self._request(
+            path,
+            method="POST",
+            json_body={"displayName": displayName, "isHidden": isHidden},
+        )
+        return MailFolderMutationResult(
+            mailbox=normalized_mailbox or "me",
+            folder=self._map_mail_folder(folder),
+        )
+
+    async def rename_mail_folder(
+        self,
+        *,
+        mailbox: str | None = None,
+        displayName: str,
+        folderId: str | None = None,
+        folderPath: str | None = None,
+    ) -> MailFolderMutationResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        resolved_folder_id = await self._resolve_mail_folder_identifier(
+            base,
+            folderId=folderId,
+            folderPath=folderPath,
+        )
+        folder = await self._request(
+            f"{base}/mailFolders/{quote(resolved_folder_id, safe='')}",
+            method="PATCH",
+            json_body={"displayName": displayName},
+        )
+        return MailFolderMutationResult(
+            mailbox=normalized_mailbox or "me",
+            folder=self._map_mail_folder(folder),
+        )
+
+    async def delete_mail_folder(
+        self,
+        *,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        folderPath: str | None = None,
+    ) -> MailFolderMutationResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        resolved_folder_id = await self._resolve_mail_folder_identifier(
+            base,
+            folderId=folderId,
+            folderPath=folderPath,
+        )
+        await self._request(
+            f"{base}/mailFolders/{quote(resolved_folder_id, safe='')}",
+            method="DELETE",
+        )
+        return MailFolderMutationResult(
+            mailbox=normalized_mailbox or "me",
+            folderId=resolved_folder_id,
+            deleted=True,
+        )
+
+    async def list_mail_rules(
+        self,
+        *,
+        mailbox: str | None = None,
+        top: int = 100,
+    ) -> MailListRulesResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        params = httpx.QueryParams(
+            {"$top": str(min(top, 100)), "$select": MESSAGE_RULE_SELECT}
+        )
+        result = await self._request(f"{self._mail_rules_path(base)}?{params}")
+        return MailListRulesResult(
+            mailbox=normalized_mailbox or "me",
+            rules=[self._map_rule(rule) for rule in result.get("value", [])],
+        )
+
+    async def create_mail_rule(
+        self,
+        *,
+        mailbox: str | None = None,
+        displayName: str,
+        sequence: int = 1,
+        isEnabled: bool = True,
+        conditions: dict[str, Any] | None = None,
+        actions: dict[str, Any] | None = None,
+        exceptions: dict[str, Any] | None = None,
+        fromAddresses: list[str] | None = None,
+        senderContains: list[str] | None = None,
+        subjectContains: list[str] | None = None,
+        bodyContains: list[str] | None = None,
+        sentToAddresses: list[str] | None = None,
+        moveToFolderId: str | None = None,
+        moveToFolderPath: str | None = None,
+        markAsRead: bool | None = None,
+        assignCategories: list[str] | None = None,
+        stopProcessingRules: bool | None = None,
+    ) -> MailRuleResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        payload = await self._mail_rule_payload(
+            base,
+            displayName=displayName,
+            sequence=sequence,
+            isEnabled=isEnabled,
+            conditions=conditions,
+            actions=actions,
+            exceptions=exceptions,
+            fromAddresses=fromAddresses,
+            senderContains=senderContains,
+            subjectContains=subjectContains,
+            bodyContains=bodyContains,
+            sentToAddresses=sentToAddresses,
+            moveToFolderId=moveToFolderId,
+            moveToFolderPath=moveToFolderPath,
+            markAsRead=markAsRead,
+            assignCategories=assignCategories,
+            stopProcessingRules=stopProcessingRules,
+        )
+        rule = await self._request(
+            self._mail_rules_path(base),
+            method="POST",
+            json_body=payload,
+        )
+        return MailRuleResult(
+            mailbox=normalized_mailbox or "me",
+            rule=self._map_rule(rule),
+        )
+
+    async def update_mail_rule(
+        self,
+        *,
+        mailbox: str | None = None,
+        ruleId: str,
+        displayName: str | None = None,
+        sequence: int | None = None,
+        isEnabled: bool | None = None,
+        conditions: dict[str, Any] | None = None,
+        actions: dict[str, Any] | None = None,
+        exceptions: dict[str, Any] | None = None,
+        fromAddresses: list[str] | None = None,
+        senderContains: list[str] | None = None,
+        subjectContains: list[str] | None = None,
+        bodyContains: list[str] | None = None,
+        sentToAddresses: list[str] | None = None,
+        moveToFolderId: str | None = None,
+        moveToFolderPath: str | None = None,
+        markAsRead: bool | None = None,
+        assignCategories: list[str] | None = None,
+        stopProcessingRules: bool | None = None,
+    ) -> MailRuleResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        payload = await self._mail_rule_payload(
+            base,
+            displayName=displayName,
+            sequence=sequence,
+            isEnabled=isEnabled,
+            conditions=conditions,
+            actions=actions,
+            exceptions=exceptions,
+            fromAddresses=fromAddresses,
+            senderContains=senderContains,
+            subjectContains=subjectContains,
+            bodyContains=bodyContains,
+            sentToAddresses=sentToAddresses,
+            moveToFolderId=moveToFolderId,
+            moveToFolderPath=moveToFolderPath,
+            markAsRead=markAsRead,
+            assignCategories=assignCategories,
+            stopProcessingRules=stopProcessingRules,
+        )
+        if not payload:
+            raise ValueError("Provide at least one rule field to update")
+        rule = await self._request(
+            f"{self._mail_rules_path(base)}/{quote(ruleId, safe='')}",
+            method="PATCH",
+            json_body=payload,
+        )
+        return MailRuleResult(
+            mailbox=normalized_mailbox or "me",
+            rule=self._map_rule(rule),
+        )
+
+    async def delete_mail_rule(
+        self,
+        *,
+        mailbox: str | None = None,
+        ruleId: str,
+    ) -> MailRuleResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        await self._request(
+            f"{self._mail_rules_path(base)}/{quote(ruleId, safe='')}",
+            method="DELETE",
+        )
+        return MailRuleResult(
+            mailbox=normalized_mailbox or "me",
+            ruleId=ruleId,
+            deleted=True,
+        )
+
     async def list_attachments(
         self,
         *,
@@ -477,6 +760,7 @@ class MicrosoftGraphClient:
         messageId: str,
         attachmentId: str,
         maxBytes: int = 1_000_000,
+        maxChars: int = 100_000,
     ) -> MailAttachmentContentResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
@@ -512,6 +796,33 @@ class MicrosoftGraphClient:
                 attachment=attachment,
                 truncated=True,
                 unsupportedReason=f"Attachment content exceeds maxBytes={maxBytes}",
+            )
+
+        if self._is_pdf_attachment(attachment):
+            content = self._extract_pdf_text(content_bytes)
+            if not content.strip():
+                return MailAttachmentContentResult(
+                    mailbox=normalized_mailbox or "me",
+                    messageId=messageId,
+                    attachment=attachment,
+                    encoding="pdf-text",
+                    unsupportedReason=(
+                        "PDF did not contain extractable text; scanned PDFs need OCR"
+                    ),
+                )
+            truncated = len(content) > maxChars
+            return MailAttachmentContentResult(
+                mailbox=normalized_mailbox or "me",
+                messageId=messageId,
+                attachment=attachment,
+                content=content[:maxChars],
+                encoding="pdf-text",
+                truncated=truncated,
+                unsupportedReason=(
+                    f"Extracted PDF text exceeds maxChars={maxChars}"
+                    if truncated
+                    else None
+                ),
             )
 
         return MailAttachmentContentResult(
@@ -586,6 +897,37 @@ class MicrosoftGraphClient:
         return MailCreateDraftResult(
             mailbox=normalized_mailbox or "me",
             draft=self._map_message_summary(message),
+        )
+
+    async def send_reply(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        comment: str,
+        replyAll: bool = False,
+        bodyType: str = "html",
+    ) -> MailSendResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        action = "replyAll" if replyAll else "reply"
+        await self._request(
+            f"{base}/messages/{quote(messageId, safe='')}/{action}",
+            method="POST",
+            json_body={
+                "message": {
+                    "body": {
+                        "contentType": self._graph_body_content_type(bodyType),
+                        "content": comment,
+                    }
+                }
+            },
+        )
+        return MailSendResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            replyAll=replyAll,
+            sent=True,
         )
 
     async def list_categories(
@@ -1029,6 +1371,88 @@ class MicrosoftGraphClient:
             event=self._map_event(event),
         )
 
+    async def update_event(
+        self,
+        *,
+        mailbox: str | None = None,
+        eventId: str,
+        subject: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        timeZone: str = "UTC",
+        attendees: list[str] | None = None,
+        body: str | None = None,
+        bodyType: str = "text",
+        location: str | None = None,
+    ) -> CalendarUpdateEventResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        payload = self._omit_none(
+            {
+                "subject": subject,
+                "start": (
+                    {"dateTime": start, "timeZone": timeZone}
+                    if start is not None
+                    else None
+                ),
+                "end": (
+                    {"dateTime": end, "timeZone": timeZone}
+                    if end is not None
+                    else None
+                ),
+                "attendees": (
+                    [
+                        {
+                            "emailAddress": {"address": address},
+                            "type": "required",
+                        }
+                        for address in attendees
+                    ]
+                    if attendees is not None
+                    else None
+                ),
+                "body": (
+                    {
+                        "contentType": self._graph_body_content_type(bodyType),
+                        "content": body,
+                    }
+                    if body is not None
+                    else None
+                ),
+                "location": (
+                    {"displayName": location} if location is not None else None
+                ),
+            }
+        )
+        if not payload:
+            raise ValueError("Provide at least one event field to update")
+
+        event = await self._request(
+            self._calendar_event_path(normalized_mailbox, eventId),
+            method="PATCH",
+            json_body=payload,
+        )
+        return CalendarUpdateEventResult(
+            mailbox=normalized_mailbox or "me",
+            event=self._map_event(event),
+        )
+
+    async def delete_event(
+        self,
+        *,
+        mailbox: str | None = None,
+        eventId: str,
+    ) -> CalendarDeleteEventResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        await self._request(
+            self._calendar_event_path(normalized_mailbox, eventId),
+            method="DELETE",
+        )
+        return CalendarDeleteEventResult(
+            mailbox=normalized_mailbox or "me",
+            eventId=eventId,
+            deleted=True,
+        )
+
     async def _resolve_folder_id(self, base_path: str, folder_name: str) -> str:
         folder = await self._request(
             f"{base_path}/mailFolders('{quote(folder_name, safe='')}')?$select=id,displayName"
@@ -1169,6 +1593,19 @@ class MicrosoftGraphClient:
             raise RuntimeError("folderPath was invalid")
         return resolved
 
+    async def _resolve_mail_folder_identifier(
+        self,
+        base_path: str,
+        *,
+        folderId: str | None,
+        folderPath: str | None,
+    ) -> str:
+        if folderId:
+            return folderId
+        if folderPath:
+            return (await self._resolve_mail_folder_by_path(base_path, folderPath)).id
+        raise ValueError("Provide folderId or folderPath")
+
     def _mail_folder_messages_path(
         self,
         base_path: str,
@@ -1178,6 +1615,9 @@ class MicrosoftGraphClient:
         if folder_id:
             return f"{base_path}/mailFolders/{quote(folder_id, safe='')}/messages"
         return f"{base_path}/mailFolders('{quote(folder, safe='')}')/messages"
+
+    def _mail_rules_path(self, base_path: str) -> str:
+        return f"{base_path}/mailFolders/inbox/messageRules"
 
     def _base_path(self, mailbox: str | None) -> str:
         return f"/users/{quote(mailbox, safe='')}" if mailbox else "/me"
@@ -1280,6 +1720,65 @@ class MicrosoftGraphClient:
             return None
         return [{"emailAddress": {"address": address}} for address in cleaned]
 
+    async def _mail_rule_payload(
+        self,
+        base_path: str,
+        *,
+        displayName: str | None,
+        sequence: int | None,
+        isEnabled: bool | None,
+        conditions: dict[str, Any] | None,
+        actions: dict[str, Any] | None,
+        exceptions: dict[str, Any] | None,
+        fromAddresses: list[str] | None,
+        senderContains: list[str] | None,
+        subjectContains: list[str] | None,
+        bodyContains: list[str] | None,
+        sentToAddresses: list[str] | None,
+        moveToFolderId: str | None,
+        moveToFolderPath: str | None,
+        markAsRead: bool | None,
+        assignCategories: list[str] | None,
+        stopProcessingRules: bool | None,
+    ) -> dict[str, Any]:
+        rule_conditions = dict(conditions or {})
+        rule_actions = dict(actions or {})
+        rule_exceptions = dict(exceptions or {})
+
+        if fromAddresses is not None:
+            rule_conditions["fromAddresses"] = self._to_recipients(fromAddresses)
+        if senderContains is not None:
+            rule_conditions["senderContains"] = senderContains
+        if subjectContains is not None:
+            rule_conditions["subjectContains"] = subjectContains
+        if bodyContains is not None:
+            rule_conditions["bodyContains"] = bodyContains
+        if sentToAddresses is not None:
+            rule_conditions["sentToAddresses"] = self._to_recipients(sentToAddresses)
+        if moveToFolderPath and not moveToFolderId:
+            moveToFolderId = (
+                await self._resolve_mail_folder_by_path(base_path, moveToFolderPath)
+            ).id
+        if moveToFolderId is not None:
+            rule_actions["moveToFolder"] = moveToFolderId
+        if markAsRead is not None:
+            rule_actions["markAsRead"] = markAsRead
+        if assignCategories is not None:
+            rule_actions["assignCategories"] = assignCategories
+        if stopProcessingRules is not None:
+            rule_actions["stopProcessingRules"] = stopProcessingRules
+
+        return self._omit_none(
+            {
+                "displayName": displayName,
+                "sequence": sequence,
+                "isEnabled": isEnabled,
+                "conditions": rule_conditions or None,
+                "actions": rule_actions or None,
+                "exceptions": rule_exceptions or None,
+            }
+        )
+
     def _message_filters(
         self,
         *,
@@ -1317,6 +1816,9 @@ class MicrosoftGraphClient:
         if folder_id:
             return f"{base}/contactFolders/{quote(folder_id, safe='')}/contacts"
         return f"{base}/contacts"
+
+    def _calendar_event_path(self, mailbox: str | None, event_id: str) -> str:
+        return f"{self._base_path(mailbox)}/calendar/events/{quote(event_id, safe='')}"
 
     def _contact_payload(
         self,
@@ -1371,6 +1873,10 @@ class MicrosoftGraphClient:
             return "Only file attachments can be read as content in this MCP server"
         if attachment.size is not None and attachment.size > maxBytes:
             return f"Attachment size exceeds maxBytes={maxBytes}"
+        if self._is_pdf_attachment(attachment):
+            if PdfReader is None:
+                return "PDF text extraction requires the pypdf package"
+            return None
         content_type = (attachment.contentType or "").split(";")[0].strip().lower()
         name = (attachment.name or "").lower()
         is_safe_type = content_type.startswith("text/") or content_type in SAFE_ATTACHMENT_CONTENT_TYPES
@@ -1378,6 +1884,26 @@ class MicrosoftGraphClient:
         if not is_safe_type and not is_safe_extension:
             return "Attachment content type is not text-like and was not returned"
         return None
+
+    def _is_pdf_attachment(self, attachment: AttachmentInfo) -> bool:
+        content_type = (attachment.contentType or "").split(";")[0].strip().lower()
+        name = (attachment.name or "").lower()
+        return content_type == "application/pdf" or name.endswith(".pdf")
+
+    def _extract_pdf_text(self, content_bytes: bytes) -> str:
+        if PdfReader is None:
+            raise RuntimeError("PDF text extraction requires the pypdf package")
+        try:
+            reader = PdfReader(io.BytesIO(content_bytes))
+        except Exception as error:  # pragma: no cover - defensive around parser internals
+            raise RuntimeError(f"Could not read PDF attachment: {error}") from error
+
+        pages: list[str] = []
+        for index, page in enumerate(reader.pages, start=1):
+            text = page.extract_text() or ""
+            if text.strip():
+                pages.append(f"--- Page {index} ---\n{text.strip()}")
+        return "\n\n".join(pages)
 
     def _graph_body_content_type(self, body_type: str) -> str:
         match body_type.lower():
@@ -1434,6 +1960,35 @@ class MicrosoftGraphClient:
             id=self._nullable_string(category.get("id")),
             displayName=str(category.get("displayName") or ""),
             color=self._nullable_string(category.get("color")),
+        )
+
+    def _map_rule(self, rule: dict[str, Any]) -> MailRuleInfo:
+        return MailRuleInfo(
+            id=str(rule["id"]),
+            displayName=str(rule.get("displayName") or ""),
+            sequence=(
+                int(rule["sequence"])
+                if rule.get("sequence") is not None
+                else None
+            ),
+            isEnabled=(
+                bool(rule["isEnabled"])
+                if rule.get("isEnabled") is not None
+                else None
+            ),
+            hasError=(
+                bool(rule["hasError"])
+                if rule.get("hasError") is not None
+                else None
+            ),
+            isReadOnly=(
+                bool(rule["isReadOnly"])
+                if rule.get("isReadOnly") is not None
+                else None
+            ),
+            conditions=rule.get("conditions") or {},
+            actions=rule.get("actions") or {},
+            exceptions=rule.get("exceptions") or {},
         )
 
     def _map_contact_folder(self, folder: dict[str, Any]) -> ContactFolderInfo:

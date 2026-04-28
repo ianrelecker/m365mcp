@@ -15,6 +15,8 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `mail_resolve_folder` for paths like `Inbox/Clients/Acme`.
 - `mail_list` accepts `folderId`, `folderPath`, or legacy `folder`. If `folder` contains `/`, it is treated like a path.
 - `mail_move` can move messages by `destinationFolderId`, `destinationFolderPath`, or legacy `destinationFolder`.
+- Use `mail_create_folder` to create top-level folders or subfolders under `parentFolderId`/`parentFolderPath`.
+- Use `mail_rename_folder` and `mail_delete_folder` by folder ID or resolved folder path.
 
 ## Message Triage
 
@@ -23,17 +25,32 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `mail_set_flag` to set follow-up status.
 - Use category tools to set, add, remove, clear, or manage Outlook categories.
 
+## Sending
+
+- Use `mail_create_draft` plus `mail_send_draft` when the user has not explicitly approved the exact final email.
+- Use `mail_send` only when the user clearly asked to send a new message now.
+- Use `mail_create_reply_draft` for safer thread replies, or `mail_send_reply` only when the user clearly approved sending the reply now.
+
+## Rules
+
+- Use `mail_list_rules` to inspect existing Inbox rules before changing them.
+- Use `mail_create_rule`, `mail_update_rule`, and `mail_delete_rule` for Outlook Inbox rules.
+- Rule tools accept raw Microsoft Graph `conditions`, `actions`, and `exceptions`, plus convenience fields like `senderContains`, `subjectContains`, `moveToFolderPath`, `markAsRead`, and `assignCategories`.
+- Resolve or create destination folders before making move rules. Prefer `moveToFolderId` after discovery.
+
 ## Attachments
 
 - Use `mail_list_attachments` before reading attachment content.
-- `mail_get_attachment_content` returns content only for small text-like files. Large, binary, item, or reference attachments return metadata with `unsupportedReason`.
+- `mail_get_attachment_content` returns content for small text-like files and extracts text from small PDFs.
+- PDF extraction is text-only. Scanned/image-only PDFs need OCR and return `unsupportedReason`.
+- Large, binary, item, or reference attachments return metadata with `unsupportedReason`.
 - The server does not save attachments to disk.
 
 ## Threads And Replies
 
 - Use `mail_get_thread` with either `messageId` or `conversationId` to inspect a conversation.
 - Use `mail_create_reply_draft` to create reply or reply-all drafts in the thread.
-- Use `mail_send_draft` only after the draft looks correct. There is no direct reply-send tool.
+- Use `mail_send_draft` only after the draft looks correct. Use `mail_send_reply` only when immediate sending is explicit.
 
 ## Contacts
 
@@ -45,6 +62,8 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 - Use `calendar_list_events` to inspect a time window.
 - Use `calendar_create_event` to create calendar events in the signed-in or delegated mailbox calendar.
+- Use `calendar_update_event` to edit subject, time, attendees, body, or location by event ID.
+- Use `calendar_delete_event` to delete by event ID. Deleting organizer meetings may notify attendees.
 
 ## Safety Notes
 

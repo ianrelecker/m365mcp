@@ -24,6 +24,7 @@ def test_build_config_parses_defaults_and_known_mailboxes() -> None:
     assert "Contacts.ReadWrite.Shared" in config.microsoft.scopes
     assert "MailboxSettings.ReadWrite" in config.microsoft.scopes
     assert "Mail.ReadWrite" in config.microsoft.scopes
+    assert "Mail.Send" in config.microsoft.scopes
 
 
 def test_build_config_rejects_invalid_encryption_key() -> None:

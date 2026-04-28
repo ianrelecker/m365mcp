@@ -20,7 +20,9 @@ from m365_mcp.microsoft_graph import MicrosoftGraphClient
 from m365_mcp.models import (
     AuthStatusResult,
     CalendarCreateEventResult,
+    CalendarDeleteEventResult,
     CalendarListEventsResult,
+    CalendarUpdateEventResult,
     ContactFoldersResult,
     ContactGetResult,
     ContactMutationResult,
@@ -31,6 +33,7 @@ from m365_mcp.models import (
     MailCategoryResult,
     MailCheckInboxResult,
     MailCreateDraftResult,
+    MailFolderMutationResult,
     MailFolderTreeResult,
     MailGetResult,
     MailListAttachmentsResult,
@@ -38,10 +41,13 @@ from m365_mcp.models import (
     MailListDraftsResult,
     MailListFoldersResult,
     MailListResult,
+    MailListRulesResult,
     MailMoveResult,
     MailResolveFolderResult,
+    MailRuleResult,
     MailSearchResult,
     MailSendDraftResult,
+    MailSendResult,
     MailThreadResult,
     MailUpdateMessageResult,
 )
@@ -370,6 +376,178 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         )
 
     @mcp.tool(
+        name="mail_create_folder",
+        description=(
+            "Create a top-level mail folder or a subfolder under parentFolderId/"
+            "parentFolderPath."
+        ),
+    )
+    async def mail_create_folder(
+        displayName: str,
+        mailbox: str | None = None,
+        parentFolderId: str | None = None,
+        parentFolderPath: str | None = None,
+        isHidden: bool | None = None,
+    ) -> MailFolderMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.create_mail_folder(
+            mailbox=mailbox,
+            displayName=displayName,
+            parentFolderId=parentFolderId,
+            parentFolderPath=parentFolderPath,
+            isHidden=isHidden,
+        )
+
+    @mcp.tool(
+        name="mail_rename_folder",
+        description="Rename a mail folder by folderId or folderPath.",
+    )
+    async def mail_rename_folder(
+        displayName: str,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        folderPath: str | None = None,
+    ) -> MailFolderMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.rename_mail_folder(
+            mailbox=mailbox,
+            displayName=displayName,
+            folderId=folderId,
+            folderPath=folderPath,
+        )
+
+    @mcp.tool(
+        name="mail_delete_folder",
+        description="Delete a mail folder by folderId or folderPath.",
+    )
+    async def mail_delete_folder(
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        folderPath: str | None = None,
+    ) -> MailFolderMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.delete_mail_folder(
+            mailbox=mailbox,
+            folderId=folderId,
+            folderPath=folderPath,
+        )
+
+    @mcp.tool(
+        name="mail_list_rules",
+        description="List Outlook Inbox message rules for the mailbox.",
+    )
+    async def mail_list_rules(
+        mailbox: str | None = None,
+        top: int = 100,
+    ) -> MailListRulesResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.list_mail_rules(mailbox=mailbox, top=top)
+
+    @mcp.tool(
+        name="mail_create_rule",
+        description=(
+            "Create an Outlook Inbox message rule. Use raw Graph conditions/actions "
+            "or convenience fields such as senderContains and moveToFolderPath."
+        ),
+    )
+    async def mail_create_rule(
+        displayName: str,
+        mailbox: str | None = None,
+        sequence: int = 1,
+        isEnabled: bool = True,
+        conditions: dict[str, object] | None = None,
+        actions: dict[str, object] | None = None,
+        exceptions: dict[str, object] | None = None,
+        fromAddresses: list[str] | None = None,
+        senderContains: list[str] | None = None,
+        subjectContains: list[str] | None = None,
+        bodyContains: list[str] | None = None,
+        sentToAddresses: list[str] | None = None,
+        moveToFolderId: str | None = None,
+        moveToFolderPath: str | None = None,
+        markAsRead: bool | None = None,
+        assignCategories: list[str] | None = None,
+        stopProcessingRules: bool | None = None,
+    ) -> MailRuleResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.create_mail_rule(
+            mailbox=mailbox,
+            displayName=displayName,
+            sequence=sequence,
+            isEnabled=isEnabled,
+            conditions=conditions,
+            actions=actions,
+            exceptions=exceptions,
+            fromAddresses=fromAddresses,
+            senderContains=senderContains,
+            subjectContains=subjectContains,
+            bodyContains=bodyContains,
+            sentToAddresses=sentToAddresses,
+            moveToFolderId=moveToFolderId,
+            moveToFolderPath=moveToFolderPath,
+            markAsRead=markAsRead,
+            assignCategories=assignCategories,
+            stopProcessingRules=stopProcessingRules,
+        )
+
+    @mcp.tool(
+        name="mail_update_rule",
+        description="Update an Outlook Inbox message rule by ID.",
+    )
+    async def mail_update_rule(
+        ruleId: str,
+        mailbox: str | None = None,
+        displayName: str | None = None,
+        sequence: int | None = None,
+        isEnabled: bool | None = None,
+        conditions: dict[str, object] | None = None,
+        actions: dict[str, object] | None = None,
+        exceptions: dict[str, object] | None = None,
+        fromAddresses: list[str] | None = None,
+        senderContains: list[str] | None = None,
+        subjectContains: list[str] | None = None,
+        bodyContains: list[str] | None = None,
+        sentToAddresses: list[str] | None = None,
+        moveToFolderId: str | None = None,
+        moveToFolderPath: str | None = None,
+        markAsRead: bool | None = None,
+        assignCategories: list[str] | None = None,
+        stopProcessingRules: bool | None = None,
+    ) -> MailRuleResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.update_mail_rule(
+            mailbox=mailbox,
+            ruleId=ruleId,
+            displayName=displayName,
+            sequence=sequence,
+            isEnabled=isEnabled,
+            conditions=conditions,
+            actions=actions,
+            exceptions=exceptions,
+            fromAddresses=fromAddresses,
+            senderContains=senderContains,
+            subjectContains=subjectContains,
+            bodyContains=bodyContains,
+            sentToAddresses=sentToAddresses,
+            moveToFolderId=moveToFolderId,
+            moveToFolderPath=moveToFolderPath,
+            markAsRead=markAsRead,
+            assignCategories=assignCategories,
+            stopProcessingRules=stopProcessingRules,
+        )
+
+    @mcp.tool(
+        name="mail_delete_rule",
+        description="Delete an Outlook Inbox message rule by ID.",
+    )
+    async def mail_delete_rule(
+        ruleId: str,
+        mailbox: str | None = None,
+    ) -> MailRuleResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.delete_mail_rule(mailbox=mailbox, ruleId=ruleId)
+
+    @mcp.tool(
         name="mail_search",
         description=(
             "Search a mailbox using Microsoft Graph $search. Use mailbox for "
@@ -445,6 +623,40 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         )
 
     @mcp.tool(
+        name="mail_send",
+        description=(
+            "Send a new email in one call. Prefer mail_create_draft first when "
+            "the user has not explicitly approved sending."
+        ),
+    )
+    async def mail_send(
+        subject: str,
+        body: str,
+        mailbox: str | None = None,
+        to: list[str] = [],
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        bodyType: Literal["text", "html"] = "text",
+        from_: Annotated[
+            str | None,
+            Field(validation_alias="from", serialization_alias="from_"),
+        ] = None,
+        saveToSentItems: bool = True,
+    ) -> MailSendResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.send_mail(
+            mailbox=mailbox,
+            subject=subject,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            body=body,
+            bodyType=bodyType,
+            from_=from_,
+            saveToSentItems=saveToSentItems,
+        )
+
+    @mcp.tool(
         name="mail_send_draft",
         description=(
             "Send an existing draft message by ID. Use mailbox for shared/delegated mailboxes."
@@ -510,6 +722,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         attachmentId: str,
         mailbox: str | None = None,
         maxBytes: int = 1_000_000,
+        maxChars: int = 100_000,
     ) -> MailAttachmentContentResult:
         runtime = runtime_provider.get()
         return await runtime.graph.get_attachment_content(
@@ -517,6 +730,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             messageId=messageId,
             attachmentId=attachmentId,
             maxBytes=maxBytes,
+            maxChars=maxChars,
         )
 
     @mcp.tool(
@@ -555,6 +769,29 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     ) -> MailCreateDraftResult:
         runtime = runtime_provider.get()
         return await runtime.graph.create_reply_draft(
+            mailbox=mailbox,
+            messageId=messageId,
+            comment=comment,
+            replyAll=replyAll,
+            bodyType=bodyType,
+        )
+
+    @mcp.tool(
+        name="mail_send_reply",
+        description=(
+            "Send a reply or reply-all immediately in the original thread. "
+            "Prefer mail_create_reply_draft first when approval is not explicit."
+        ),
+    )
+    async def mail_send_reply(
+        messageId: str,
+        comment: str,
+        mailbox: str | None = None,
+        replyAll: bool = False,
+        bodyType: Literal["text", "html"] = "html",
+    ) -> MailSendResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.send_reply(
             mailbox=mailbox,
             messageId=messageId,
             comment=comment,
@@ -914,6 +1151,47 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             bodyType=bodyType,
             location=location,
         )
+
+    @mcp.tool(
+        name="calendar_update_event",
+        description="Update an event in the default calendar by event ID.",
+    )
+    async def calendar_update_event(
+        eventId: str,
+        mailbox: str | None = None,
+        subject: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        timeZone: str = "UTC",
+        attendees: list[str] | None = None,
+        body: str | None = None,
+        bodyType: Literal["text", "html"] = "text",
+        location: str | None = None,
+    ) -> CalendarUpdateEventResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.update_event(
+            mailbox=mailbox,
+            eventId=eventId,
+            subject=subject,
+            start=start,
+            end=end,
+            timeZone=timeZone,
+            attendees=attendees,
+            body=body,
+            bodyType=bodyType,
+            location=location,
+        )
+
+    @mcp.tool(
+        name="calendar_delete_event",
+        description="Delete an event from the default calendar by event ID.",
+    )
+    async def calendar_delete_event(
+        eventId: str,
+        mailbox: str | None = None,
+    ) -> CalendarDeleteEventResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.delete_event(mailbox=mailbox, eventId=eventId)
 
     return mcp
 
