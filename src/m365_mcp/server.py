@@ -3,6 +3,7 @@ import socket
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urljoin
 
@@ -20,14 +21,33 @@ from m365_mcp.models import (
     AuthStatusResult,
     CalendarCreateEventResult,
     CalendarListEventsResult,
+    ContactFoldersResult,
+    ContactGetResult,
+    ContactMutationResult,
+    ContactsListResult,
+    ContactsSearchResult,
+    M365CapabilitiesResult,
+    MailAttachmentContentResult,
+    MailCategoryResult,
+    MailCheckInboxResult,
     MailCreateDraftResult,
+    MailFolderTreeResult,
     MailGetResult,
+    MailListAttachmentsResult,
+    MailListCategoriesResult,
     MailListDraftsResult,
+    MailListFoldersResult,
     MailListResult,
     MailMoveResult,
+    MailResolveFolderResult,
     MailSearchResult,
     MailSendDraftResult,
+    MailThreadResult,
+    MailUpdateMessageResult,
 )
+
+
+CAPABILITIES_PATH = Path(__file__).parents[2] / "M365_MCP_CAPABILITIES.md"
 
 
 @dataclass
@@ -163,6 +183,10 @@ def _can_bind_localhost(port: int) -> bool:
     return True
 
 
+def _load_capabilities_text() -> str:
+    return CAPABILITIES_PATH.read_text("utf-8")
+
+
 def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastMCP) -> Iterator[dict[str, object]]:
@@ -185,6 +209,27 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
 
     mcp = FastMCP("claude-m365-mcp", lifespan=lifespan)
 
+    @mcp.resource(
+        "m365://capabilities",
+        name="m365_capabilities",
+        title="M365 MCP Capabilities",
+        description="Model-facing guide for using the M365 MCP server safely and effectively.",
+        mime_type="text/markdown",
+    )
+    def m365_capabilities_resource() -> str:
+        return _load_capabilities_text()
+
+    @mcp.tool(
+        name="m365_capabilities",
+        description=(
+            "Read the model-facing guide for what this M365 MCP server can do "
+            "and how to use its inbox, folder, attachment, thread, category, "
+            "contact, and calendar tools."
+        ),
+    )
+    async def m365_capabilities() -> M365CapabilitiesResult:
+        return M365CapabilitiesResult(content=_load_capabilities_text())
+
     @mcp.tool(
         name="auth_status",
         description=(
@@ -200,6 +245,9 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             account=status.account,
             expiresAt=status.expiresAt,
             knownMailboxes=status.knownMailboxes,
+            requiredScopes=status.requiredScopes,
+            grantedScopes=status.grantedScopes,
+            missingScopes=status.missingScopes,
             localStatusUrl=runtime.config.localBaseUrl,
             microsoftConnectUrl=urljoin(
                 runtime.config.localBaseUrl, "/auth/microsoft/start"
@@ -219,10 +267,107 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     async def mail_list(
         mailbox: str | None = None,
         folder: str = "Inbox",
+        folderId: str | None = None,
+        folderPath: str | None = None,
         top: int = 25,
+        isRead: bool | None = None,
+        hasAttachments: bool | None = None,
+        importance: Literal["low", "normal", "high"] | None = None,
+        categories: list[str] | None = None,
+        flagStatus: Literal["notFlagged", "flagged", "complete"] | None = None,
     ) -> MailListResult:
         runtime = runtime_provider.get()
-        return await runtime.graph.list_messages(mailbox=mailbox, folder=folder, top=top)
+        return await runtime.graph.list_messages(
+            mailbox=mailbox,
+            folder=folder,
+            folderId=folderId,
+            folderPath=folderPath,
+            top=top,
+            isRead=isRead,
+            hasAttachments=hasAttachments,
+            importance=importance,
+            categories=categories,
+            flagStatus=flagStatus,
+        )
+
+    @mcp.tool(
+        name="mail_check_inbox",
+        description=(
+            "Quickly check an inbox or shared inbox folder. Defaults to unread "
+            "messages in Inbox and includes triage metadata."
+        ),
+    )
+    async def mail_check_inbox(
+        mailbox: str | None = None,
+        folderPath: str = "Inbox",
+        folderId: str | None = None,
+        top: int = 25,
+        includeRead: bool = False,
+    ) -> MailCheckInboxResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.check_inbox(
+            mailbox=mailbox,
+            folderPath=folderPath,
+            folderId=folderId,
+            top=top,
+            includeRead=includeRead,
+        )
+
+    @mcp.tool(
+        name="mail_list_folders",
+        description=(
+            "List top-level mail folders or direct child folders for own or shared mailboxes."
+        ),
+    )
+    async def mail_list_folders(
+        mailbox: str | None = None,
+        parentFolderId: str | None = None,
+        top: int = 100,
+    ) -> MailListFoldersResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.list_mail_folders(
+            mailbox=mailbox,
+            parentFolderId=parentFolderId,
+            top=top,
+        )
+
+    @mcp.tool(
+        name="mail_folder_tree",
+        description=(
+            "Return a nested folder tree so the model can navigate subfolders by path or ID."
+        ),
+    )
+    async def mail_folder_tree(
+        mailbox: str | None = None,
+        rootFolderId: str | None = None,
+        maxDepth: int = 4,
+    ) -> MailFolderTreeResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.mail_folder_tree(
+            mailbox=mailbox,
+            rootFolderId=rootFolderId,
+            maxDepth=maxDepth,
+        )
+
+    @mcp.tool(
+        name="mail_resolve_folder",
+        description=(
+            "Resolve a folder path like Inbox/Clients/Acme or a child display name to a folder ID."
+        ),
+    )
+    async def mail_resolve_folder(
+        mailbox: str | None = None,
+        folderPath: str | None = None,
+        parentFolderId: str | None = None,
+        displayName: str | None = None,
+    ) -> MailResolveFolderResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.resolve_mail_folder(
+            mailbox=mailbox,
+            folderPath=folderPath,
+            parentFolderId=parentFolderId,
+            displayName=displayName,
+        )
 
     @mcp.tool(
         name="mail_search",
@@ -324,6 +469,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         destinationFolder: str,
         mailbox: str | None = None,
         destinationFolderIsId: bool = False,
+        destinationFolderId: str | None = None,
+        destinationFolderPath: str | None = None,
     ) -> MailMoveResult:
         runtime = runtime_provider.get()
         return await runtime.graph.move_message(
@@ -331,6 +478,390 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             messageId=messageId,
             destinationFolder=destinationFolder,
             destinationFolderIsId=destinationFolderIsId,
+            destinationFolderId=destinationFolderId,
+            destinationFolderPath=destinationFolderPath,
+        )
+
+    @mcp.tool(
+        name="mail_list_attachments",
+        description="List attachment metadata for a message without downloading content.",
+    )
+    async def mail_list_attachments(
+        messageId: str,
+        mailbox: str | None = None,
+        includeInline: bool = False,
+    ) -> MailListAttachmentsResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.list_attachments(
+            mailbox=mailbox,
+            messageId=messageId,
+            includeInline=includeInline,
+        )
+
+    @mcp.tool(
+        name="mail_get_attachment_content",
+        description=(
+            "Read small text-like attachment content. Large or binary attachments "
+            "return metadata with an unsupportedReason instead of content."
+        ),
+    )
+    async def mail_get_attachment_content(
+        messageId: str,
+        attachmentId: str,
+        mailbox: str | None = None,
+        maxBytes: int = 1_000_000,
+    ) -> MailAttachmentContentResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.get_attachment_content(
+            mailbox=mailbox,
+            messageId=messageId,
+            attachmentId=attachmentId,
+            maxBytes=maxBytes,
+        )
+
+    @mcp.tool(
+        name="mail_get_thread",
+        description=(
+            "Get messages in the same conversation by messageId or conversationId."
+        ),
+    )
+    async def mail_get_thread(
+        messageId: str | None = None,
+        conversationId: str | None = None,
+        mailbox: str | None = None,
+        top: int = 50,
+    ) -> MailThreadResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.get_thread(
+            mailbox=mailbox,
+            messageId=messageId,
+            conversationId=conversationId,
+            top=top,
+        )
+
+    @mcp.tool(
+        name="mail_create_reply_draft",
+        description=(
+            "Create a reply or reply-all draft in the original message thread. "
+            "Use mail_send_draft later to send it."
+        ),
+    )
+    async def mail_create_reply_draft(
+        messageId: str,
+        comment: str,
+        mailbox: str | None = None,
+        replyAll: bool = False,
+        bodyType: Literal["text", "html"] = "html",
+    ) -> MailCreateDraftResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.create_reply_draft(
+            mailbox=mailbox,
+            messageId=messageId,
+            comment=comment,
+            replyAll=replyAll,
+            bodyType=bodyType,
+        )
+
+    @mcp.tool(
+        name="mail_list_categories",
+        description="List Outlook master categories for a mailbox.",
+    )
+    async def mail_list_categories(
+        mailbox: str | None = None,
+    ) -> MailListCategoriesResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.list_categories(mailbox=mailbox)
+
+    @mcp.tool(
+        name="mail_set_categories",
+        description="Replace the categories assigned to a message.",
+    )
+    async def mail_set_categories(
+        messageId: str,
+        categories: list[str],
+        mailbox: str | None = None,
+    ) -> MailUpdateMessageResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.set_message_categories(
+            mailbox=mailbox,
+            messageId=messageId,
+            categories=categories,
+        )
+
+    @mcp.tool(
+        name="mail_add_categories",
+        description="Add categories to a message without removing existing categories.",
+    )
+    async def mail_add_categories(
+        messageId: str,
+        categories: list[str],
+        mailbox: str | None = None,
+    ) -> MailUpdateMessageResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.add_message_categories(
+            mailbox=mailbox,
+            messageId=messageId,
+            categories=categories,
+        )
+
+    @mcp.tool(
+        name="mail_remove_categories",
+        description="Remove selected categories from a message.",
+    )
+    async def mail_remove_categories(
+        messageId: str,
+        categories: list[str],
+        mailbox: str | None = None,
+    ) -> MailUpdateMessageResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.remove_message_categories(
+            mailbox=mailbox,
+            messageId=messageId,
+            categories=categories,
+        )
+
+    @mcp.tool(
+        name="mail_clear_categories",
+        description="Remove all categories from a message.",
+    )
+    async def mail_clear_categories(
+        messageId: str,
+        mailbox: str | None = None,
+    ) -> MailUpdateMessageResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.clear_message_categories(
+            mailbox=mailbox,
+            messageId=messageId,
+        )
+
+    @mcp.tool(
+        name="mail_create_category",
+        description="Create an Outlook master category definition.",
+    )
+    async def mail_create_category(
+        displayName: str,
+        color: str = "preset0",
+        mailbox: str | None = None,
+    ) -> MailCategoryResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.create_category(
+            mailbox=mailbox,
+            displayName=displayName,
+            color=color,
+        )
+
+    @mcp.tool(
+        name="mail_update_category",
+        description="Update an Outlook master category definition.",
+    )
+    async def mail_update_category(
+        categoryId: str,
+        displayName: str | None = None,
+        color: str | None = None,
+        mailbox: str | None = None,
+    ) -> MailCategoryResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.update_category(
+            mailbox=mailbox,
+            categoryId=categoryId,
+            displayName=displayName,
+            color=color,
+        )
+
+    @mcp.tool(
+        name="mail_delete_category",
+        description="Delete an Outlook master category definition.",
+    )
+    async def mail_delete_category(
+        categoryId: str,
+        mailbox: str | None = None,
+    ) -> MailCategoryResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.delete_category(
+            mailbox=mailbox,
+            categoryId=categoryId,
+        )
+
+    @mcp.tool(
+        name="mail_mark_read",
+        description="Mark a message read or unread.",
+    )
+    async def mail_mark_read(
+        messageId: str,
+        isRead: bool = True,
+        mailbox: str | None = None,
+    ) -> MailUpdateMessageResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.mark_message_read(
+            mailbox=mailbox,
+            messageId=messageId,
+            isRead=isRead,
+        )
+
+    @mcp.tool(
+        name="mail_set_flag",
+        description="Set a message follow-up flag status.",
+    )
+    async def mail_set_flag(
+        messageId: str,
+        flagStatus: Literal["notFlagged", "flagged", "complete"],
+        mailbox: str | None = None,
+        startDateTime: str | None = None,
+        dueDateTime: str | None = None,
+    ) -> MailUpdateMessageResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.set_message_flag(
+            mailbox=mailbox,
+            messageId=messageId,
+            flagStatus=flagStatus,
+            startDateTime=startDateTime,
+            dueDateTime=dueDateTime,
+        )
+
+    @mcp.tool(
+        name="contacts_list",
+        description="List Outlook contacts from the default or specified contact folder.",
+    )
+    async def contacts_list(
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        top: int = 25,
+    ) -> ContactsListResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.list_contacts(
+            mailbox=mailbox,
+            folderId=folderId,
+            top=top,
+        )
+
+    @mcp.tool(
+        name="contacts_search",
+        description="Search Outlook contacts by exact email or client-side name/email matching.",
+    )
+    async def contacts_search(
+        query: str,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        top: int = 25,
+        maxPages: int = 5,
+    ) -> ContactsSearchResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.search_contacts(
+            mailbox=mailbox,
+            query=query,
+            folderId=folderId,
+            top=top,
+            maxPages=maxPages,
+        )
+
+    @mcp.tool(
+        name="contacts_get",
+        description="Get one Outlook contact by ID.",
+    )
+    async def contacts_get(
+        contactId: str,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+    ) -> ContactGetResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.get_contact(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+        )
+
+    @mcp.tool(
+        name="contacts_create",
+        description="Create an Outlook contact.",
+    )
+    async def contacts_create(
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        displayName: str | None = None,
+        givenName: str | None = None,
+        surname: str | None = None,
+        emailAddresses: list[str] | None = None,
+        companyName: str | None = None,
+        jobTitle: str | None = None,
+        businessPhones: list[str] | None = None,
+        mobilePhone: str | None = None,
+    ) -> ContactMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.create_contact(
+            mailbox=mailbox,
+            folderId=folderId,
+            displayName=displayName,
+            givenName=givenName,
+            surname=surname,
+            emailAddresses=emailAddresses,
+            companyName=companyName,
+            jobTitle=jobTitle,
+            businessPhones=businessPhones,
+            mobilePhone=mobilePhone,
+        )
+
+    @mcp.tool(
+        name="contacts_update",
+        description="Update an Outlook contact.",
+    )
+    async def contacts_update(
+        contactId: str,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        displayName: str | None = None,
+        givenName: str | None = None,
+        surname: str | None = None,
+        emailAddresses: list[str] | None = None,
+        companyName: str | None = None,
+        jobTitle: str | None = None,
+        businessPhones: list[str] | None = None,
+        mobilePhone: str | None = None,
+    ) -> ContactMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.update_contact(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            displayName=displayName,
+            givenName=givenName,
+            surname=surname,
+            emailAddresses=emailAddresses,
+            companyName=companyName,
+            jobTitle=jobTitle,
+            businessPhones=businessPhones,
+            mobilePhone=mobilePhone,
+        )
+
+    @mcp.tool(
+        name="contacts_delete",
+        description="Delete an Outlook contact by ID.",
+    )
+    async def contacts_delete(
+        contactId: str,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.delete_contact(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+        )
+
+    @mcp.tool(
+        name="contacts_list_folders",
+        description="List Outlook contact folders or direct child contact folders.",
+    )
+    async def contacts_list_folders(
+        mailbox: str | None = None,
+        parentFolderId: str | None = None,
+        top: int = 100,
+    ) -> ContactFoldersResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.list_contact_folders(
+            mailbox=mailbox,
+            parentFolderId=parentFolderId,
+            top=top,
         )
 
     @mcp.tool(

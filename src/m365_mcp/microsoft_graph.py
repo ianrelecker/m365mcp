@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -8,20 +9,41 @@ from urllib.parse import quote
 import httpx
 
 from .models import (
+    AttachmentInfo,
     CalendarAttendee,
     CalendarCreateEventResult,
     CalendarDateTime,
     CalendarEvent,
     CalendarListEventsResult,
     CalendarWindow,
+    ContactFoldersResult,
+    ContactFolderInfo,
+    ContactGetResult,
+    ContactInfo,
+    ContactMutationResult,
+    ContactsListResult,
+    ContactsSearchResult,
     FullMessage,
+    MailAttachmentContentResult,
+    MailCategoryInfo,
+    MailCategoryResult,
+    MailCheckInboxResult,
     MailCreateDraftResult,
+    MailFolderInfo,
+    MailFolderTreeNode,
+    MailFolderTreeResult,
     MailGetResult,
+    MailListAttachmentsResult,
+    MailListCategoriesResult,
     MailListDraftsResult,
+    MailListFoldersResult,
     MailListResult,
     MailMoveResult,
+    MailResolveFolderResult,
     MailSearchResult,
     MailSendDraftResult,
+    MailThreadResult,
+    MailUpdateMessageResult,
     MessageBody,
     MessageSummary,
 )
@@ -30,6 +52,52 @@ from .microsoft_auth import MicrosoftAuthService
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+MESSAGE_SUMMARY_SELECT = (
+    "id,subject,from,sender,replyTo,receivedDateTime,sentDateTime,"
+    "bodyPreview,webLink,isDraft,isRead,hasAttachments,importance,"
+    "categories,flag,parentFolderId,internetMessageId,conversationId"
+)
+MESSAGE_FULL_SELECT = (
+    "id,subject,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,"
+    "receivedDateTime,sentDateTime,bodyPreview,body,webLink,isDraft,isRead,"
+    "hasAttachments,importance,categories,flag,parentFolderId,internetMessageId,"
+    "conversationId"
+)
+MAIL_FOLDER_SELECT = (
+    "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden"
+)
+CONTACT_SELECT = (
+    "id,displayName,givenName,surname,companyName,jobTitle,"
+    "businessPhones,mobilePhone,emailAddresses"
+)
+CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount"
+SAFE_ATTACHMENT_CONTENT_TYPES = {
+    "application/calendar",
+    "application/csv",
+    "application/json",
+    "application/xml",
+    "text/calendar",
+    "text/csv",
+    "text/html",
+    "text/markdown",
+    "text/plain",
+    "text/tab-separated-values",
+    "text/xml",
+}
+SAFE_ATTACHMENT_EXTENSIONS = {
+    ".csv",
+    ".ics",
+    ".json",
+    ".log",
+    ".md",
+    ".txt",
+    ".tsv",
+    ".xml",
+    ".html",
+    ".htm",
+}
 
 
 class MicrosoftGraphClient:
@@ -55,27 +123,82 @@ class MicrosoftGraphClient:
         *,
         mailbox: str | None = None,
         folder: str = "Inbox",
+        folderId: str | None = None,
+        folderPath: str | None = None,
         top: int = 25,
+        isRead: bool | None = None,
+        hasAttachments: bool | None = None,
+        importance: str | None = None,
+        categories: list[str] | None = None,
+        flagStatus: str | None = None,
     ) -> MailListResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
-        query = httpx.QueryParams(
-            {
-                "$top": str(min(top, 100)),
-                "$select": (
-                    "id,subject,from,receivedDateTime,sentDateTime,"
-                    "bodyPreview,webLink,isDraft,conversationId"
-                ),
-            }
+        resolved_folder_id = folderId
+        resolved_folder_path = folderPath
+        legacy_folder = folder
+
+        if folderPath is None and folderId is None and "/" in folder:
+            resolved_folder_path = folder
+
+        if resolved_folder_path and not resolved_folder_id:
+            resolved = await self._resolve_mail_folder_by_path(base, resolved_folder_path)
+            resolved_folder_id = resolved.id
+
+        filters = self._message_filters(
+            isRead=isRead,
+            hasAttachments=hasAttachments,
+            importance=importance,
+            categories=categories,
+            flagStatus=flagStatus,
         )
+        params: dict[str, str] = {
+            "$top": str(min(top, 100)),
+            "$select": MESSAGE_SUMMARY_SELECT,
+        }
+        if filters:
+            params["$filter"] = " and ".join(filters)
+        query = httpx.QueryParams(params)
         result = await self._request(
-            f"{base}/mailFolders('{quote(folder, safe='')}')/messages?{query}"
+            f"{self._mail_folder_messages_path(base, legacy_folder, resolved_folder_id)}?{query}"
         )
 
         return MailListResult(
             mailbox=normalized_mailbox or "me",
             folder=folder,
+            folderId=resolved_folder_id,
+            folderPath=resolved_folder_path,
             messages=[self._map_message_summary(message) for message in result["value"]],
+        )
+
+    async def check_inbox(
+        self,
+        *,
+        mailbox: str | None = None,
+        folderPath: str = "Inbox",
+        folderId: str | None = None,
+        top: int = 25,
+        includeRead: bool = False,
+    ) -> MailCheckInboxResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        folder_info = (
+            await self._get_mail_folder(base, folderId)
+            if folderId
+            else await self._resolve_mail_folder_by_path(base, folderPath)
+        )
+        listed = await self.list_messages(
+            mailbox=normalized_mailbox,
+            folder=folderPath,
+            folderId=folder_info.id,
+            folderPath=folderPath,
+            top=top,
+            isRead=None if includeRead else False,
+        )
+        return MailCheckInboxResult(
+            mailbox=normalized_mailbox or "me",
+            folder=folder_info,
+            messages=listed.messages,
         )
 
     async def search_messages(
@@ -91,10 +214,7 @@ class MicrosoftGraphClient:
             {
                 "$top": str(min(top, 50)),
                 "$search": f"\"{query.replace('\"', '\\\"')}\"",
-                "$select": (
-                    "id,subject,from,receivedDateTime,sentDateTime,"
-                    "bodyPreview,webLink,isDraft,conversationId"
-                ),
+                "$select": MESSAGE_SUMMARY_SELECT,
             }
         )
         result = await self._request(
@@ -118,11 +238,7 @@ class MicrosoftGraphClient:
         base = self._base_path(normalized_mailbox)
         params = httpx.QueryParams(
             {
-                "$select": (
-                    "id,subject,from,toRecipients,ccRecipients,bccRecipients,"
-                    "receivedDateTime,sentDateTime,bodyPreview,body,webLink,"
-                    "isDraft,importance,conversationId"
-                ),
+                "$select": MESSAGE_FULL_SELECT,
             }
         )
         message = await self._request(
@@ -144,10 +260,7 @@ class MicrosoftGraphClient:
         params = httpx.QueryParams(
             {
                 "$top": str(min(top, 100)),
-                "$select": (
-                    "id,subject,from,receivedDateTime,sentDateTime,"
-                    "bodyPreview,webLink,isDraft,conversationId"
-                ),
+                "$select": MESSAGE_SUMMARY_SELECT,
             }
         )
         result = await self._request(f"{base}/mailFolders('Drafts')/messages?{params}")
@@ -226,14 +339,26 @@ class MicrosoftGraphClient:
         messageId: str,
         destinationFolder: str,
         destinationFolderIsId: bool = False,
+        destinationFolderId: str | None = None,
+        destinationFolderPath: str | None = None,
     ) -> MailMoveResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
-        destination_id = (
-            destinationFolder
-            if destinationFolderIsId
-            else await self._resolve_folder_id(base, destinationFolder)
-        )
+        if destinationFolderId:
+            destination_id = destinationFolderId
+        elif destinationFolderPath:
+            destination_id = (
+                await self._resolve_mail_folder_by_path(base, destinationFolderPath)
+            ).id
+        elif destinationFolderIsId:
+            destination_id = destinationFolder
+        elif "/" in destinationFolder:
+            destinationFolderPath = destinationFolder
+            destination_id = (
+                await self._resolve_mail_folder_by_path(base, destinationFolder)
+            ).id
+        else:
+            destination_id = await self._resolve_folder_id(base, destinationFolder)
         moved = await self._request(
             f"{base}/messages/{quote(messageId, safe='')}/move",
             method="POST",
@@ -243,7 +368,587 @@ class MicrosoftGraphClient:
         return MailMoveResult(
             mailbox=normalized_mailbox or "me",
             destinationFolder=destinationFolder,
+            destinationFolderId=destination_id,
+            destinationFolderPath=destinationFolderPath,
             movedMessage=self._map_message_summary(moved),
+        )
+
+    async def list_mail_folders(
+        self,
+        *,
+        mailbox: str | None = None,
+        parentFolderId: str | None = None,
+        top: int = 100,
+    ) -> MailListFoldersResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        folders = await self._list_mail_folder_infos(
+            base,
+            parentFolderId=parentFolderId,
+            top=top,
+        )
+        return MailListFoldersResult(
+            mailbox=normalized_mailbox or "me",
+            parentFolderId=parentFolderId,
+            folders=folders,
+        )
+
+    async def mail_folder_tree(
+        self,
+        *,
+        mailbox: str | None = None,
+        rootFolderId: str | None = None,
+        maxDepth: int = 4,
+    ) -> MailFolderTreeResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        depth = max(1, min(maxDepth, 8))
+        roots = await self._list_mail_folder_tree(
+            base,
+            parentFolderId=rootFolderId,
+            maxDepth=depth,
+            currentPath=None,
+        )
+        return MailFolderTreeResult(
+            mailbox=normalized_mailbox or "me",
+            rootFolderId=rootFolderId,
+            maxDepth=depth,
+            folders=roots,
+        )
+
+    async def resolve_mail_folder(
+        self,
+        *,
+        mailbox: str | None = None,
+        folderPath: str | None = None,
+        parentFolderId: str | None = None,
+        displayName: str | None = None,
+    ) -> MailResolveFolderResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        if folderPath:
+            folder = await self._resolve_mail_folder_by_path(base, folderPath)
+        elif displayName:
+            folder = await self._find_mail_folder_child(
+                base,
+                parentFolderId=parentFolderId,
+                displayName=displayName,
+            )
+        elif parentFolderId:
+            folder = await self._get_mail_folder(base, parentFolderId)
+        else:
+            raise ValueError("Provide folderPath, displayName, or parentFolderId")
+
+        return MailResolveFolderResult(
+            mailbox=normalized_mailbox or "me",
+            folder=folder,
+        )
+
+    async def list_attachments(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        includeInline: bool = False,
+    ) -> MailListAttachmentsResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        result = await self._request(
+            f"{base}/messages/{quote(messageId, safe='')}/attachments"
+        )
+        attachments = [
+            self._map_attachment(attachment)
+            for attachment in result.get("value", [])
+        ]
+        if not includeInline:
+            attachments = [
+                attachment for attachment in attachments if not attachment.isInline
+            ]
+        return MailListAttachmentsResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            attachments=attachments,
+        )
+
+    async def get_attachment_content(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        attachmentId: str,
+        maxBytes: int = 1_000_000,
+    ) -> MailAttachmentContentResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        metadata = await self._request(
+            f"{base}/messages/{quote(messageId, safe='')}/attachments/{quote(attachmentId, safe='')}"
+        )
+        attachment = self._map_attachment(metadata)
+        unsupported = self._attachment_unsupported_reason(
+            attachment,
+            maxBytes=maxBytes,
+        )
+        if unsupported:
+            return MailAttachmentContentResult(
+                mailbox=normalized_mailbox or "me",
+                messageId=messageId,
+                attachment=attachment,
+                unsupportedReason=unsupported,
+            )
+
+        content_bytes: bytes
+        content_bytes_value = metadata.get("contentBytes")
+        if isinstance(content_bytes_value, str):
+            content_bytes = base64.b64decode(content_bytes_value)
+        else:
+            content_bytes = await self._request_bytes(
+                f"{base}/messages/{quote(messageId, safe='')}/attachments/{quote(attachmentId, safe='')}/$value"
+            )
+
+        if len(content_bytes) > maxBytes:
+            return MailAttachmentContentResult(
+                mailbox=normalized_mailbox or "me",
+                messageId=messageId,
+                attachment=attachment,
+                truncated=True,
+                unsupportedReason=f"Attachment content exceeds maxBytes={maxBytes}",
+            )
+
+        return MailAttachmentContentResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            attachment=attachment,
+            content=content_bytes.decode("utf-8", errors="replace"),
+            encoding="utf-8",
+        )
+
+    async def get_thread(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str | None = None,
+        conversationId: str | None = None,
+        top: int = 50,
+    ) -> MailThreadResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        resolved_conversation_id = conversationId
+        if not resolved_conversation_id:
+            if not messageId:
+                raise ValueError("Provide messageId or conversationId")
+            message = await self._request(
+                f"{base}/messages/{quote(messageId, safe='')}?$select=conversationId"
+            )
+            resolved_conversation_id = str(message["conversationId"])
+
+        params = httpx.QueryParams(
+            {
+                "$top": str(min(top, 100)),
+                "$select": MESSAGE_SUMMARY_SELECT,
+                "$filter": (
+                    "conversationId eq "
+                    f"'{self._escape_odata_string(resolved_conversation_id)}'"
+                ),
+                "$orderby": "receivedDateTime",
+            }
+        )
+        result = await self._request(f"{base}/messages?{params}")
+        return MailThreadResult(
+            mailbox=normalized_mailbox or "me",
+            conversationId=resolved_conversation_id,
+            messages=[self._map_message_summary(message) for message in result["value"]],
+        )
+
+    async def create_reply_draft(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        comment: str,
+        replyAll: bool = False,
+        bodyType: str = "html",
+    ) -> MailCreateDraftResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        action = "createReplyAll" if replyAll else "createReply"
+        message = await self._request(
+            f"{base}/messages/{quote(messageId, safe='')}/{action}",
+            method="POST",
+            json_body={
+                "message": {
+                    "body": {
+                        "contentType": self._graph_body_content_type(bodyType),
+                        "content": comment,
+                    }
+                }
+            },
+        )
+        return MailCreateDraftResult(
+            mailbox=normalized_mailbox or "me",
+            draft=self._map_message_summary(message),
+        )
+
+    async def list_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+    ) -> MailListCategoriesResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        result = await self._request(f"{base}/outlook/masterCategories")
+        return MailListCategoriesResult(
+            mailbox=normalized_mailbox or "me",
+            categories=[
+                self._map_category(category) for category in result.get("value", [])
+            ],
+        )
+
+    async def create_category(
+        self,
+        *,
+        mailbox: str | None = None,
+        displayName: str,
+        color: str = "preset0",
+    ) -> MailCategoryResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        category = await self._request(
+            f"{base}/outlook/masterCategories",
+            method="POST",
+            json_body={"displayName": displayName, "color": color},
+        )
+        return MailCategoryResult(
+            mailbox=normalized_mailbox or "me",
+            category=self._map_category(category),
+        )
+
+    async def update_category(
+        self,
+        *,
+        mailbox: str | None = None,
+        categoryId: str,
+        displayName: str | None = None,
+        color: str | None = None,
+    ) -> MailCategoryResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        category = await self._request(
+            f"{base}/outlook/masterCategories/{quote(categoryId, safe='')}",
+            method="PATCH",
+            json_body={"displayName": displayName, "color": color},
+        )
+        return MailCategoryResult(
+            mailbox=normalized_mailbox or "me",
+            category=self._map_category(category),
+        )
+
+    async def delete_category(
+        self,
+        *,
+        mailbox: str | None = None,
+        categoryId: str,
+    ) -> MailCategoryResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        await self._request(
+            f"{base}/outlook/masterCategories/{quote(categoryId, safe='')}",
+            method="DELETE",
+        )
+        return MailCategoryResult(
+            mailbox=normalized_mailbox or "me",
+            categoryId=categoryId,
+            deleted=True,
+        )
+
+    async def set_message_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        categories: list[str],
+    ) -> MailUpdateMessageResult:
+        return await self._patch_message(
+            mailbox=mailbox,
+            messageId=messageId,
+            payload={"categories": categories},
+        )
+
+    async def add_message_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        categories: list[str],
+    ) -> MailUpdateMessageResult:
+        current = await self.get_message(mailbox=mailbox, messageId=messageId)
+        existing = list(current.message.categories)
+        for category in categories:
+            if category not in existing:
+                existing.append(category)
+        return await self.set_message_categories(
+            mailbox=mailbox,
+            messageId=messageId,
+            categories=existing,
+        )
+
+    async def remove_message_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        categories: list[str],
+    ) -> MailUpdateMessageResult:
+        current = await self.get_message(mailbox=mailbox, messageId=messageId)
+        remove = set(categories)
+        return await self.set_message_categories(
+            mailbox=mailbox,
+            messageId=messageId,
+            categories=[
+                category for category in current.message.categories if category not in remove
+            ],
+        )
+
+    async def clear_message_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+    ) -> MailUpdateMessageResult:
+        return await self.set_message_categories(
+            mailbox=mailbox,
+            messageId=messageId,
+            categories=[],
+        )
+
+    async def mark_message_read(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        isRead: bool = True,
+    ) -> MailUpdateMessageResult:
+        return await self._patch_message(
+            mailbox=mailbox,
+            messageId=messageId,
+            payload={"isRead": isRead},
+        )
+
+    async def set_message_flag(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        flagStatus: str,
+        startDateTime: str | None = None,
+        dueDateTime: str | None = None,
+    ) -> MailUpdateMessageResult:
+        flag: dict[str, Any] = {"flagStatus": flagStatus}
+        if startDateTime:
+            flag["startDateTime"] = {"dateTime": startDateTime, "timeZone": "UTC"}
+        if dueDateTime:
+            flag["dueDateTime"] = {"dateTime": dueDateTime, "timeZone": "UTC"}
+        return await self._patch_message(
+            mailbox=mailbox,
+            messageId=messageId,
+            payload={"flag": flag},
+        )
+
+    async def list_contacts(
+        self,
+        *,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        top: int = 25,
+    ) -> ContactsListResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        result = await self._request(
+            f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams({'$top': str(min(top, 100)), '$select': CONTACT_SELECT})}"
+        )
+        return ContactsListResult(
+            mailbox=normalized_mailbox or "me",
+            folderId=folderId,
+            contacts=[self._map_contact(contact) for contact in result.get("value", [])],
+        )
+
+    async def search_contacts(
+        self,
+        *,
+        mailbox: str | None = None,
+        query: str,
+        folderId: str | None = None,
+        top: int = 25,
+        maxPages: int = 5,
+    ) -> ContactsSearchResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        query_text = query.strip()
+        params: dict[str, str] = {
+            "$top": str(min(max(top, 1), 100)),
+            "$select": CONTACT_SELECT,
+        }
+        if "@" in query_text and " " not in query_text:
+            params["$filter"] = (
+                "emailAddresses/any(a:a/address eq "
+                f"'{self._escape_odata_string(query_text)}')"
+            )
+            result = await self._request(
+                f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams(params)}"
+            )
+            contacts = [self._map_contact(contact) for contact in result.get("value", [])]
+        else:
+            contacts = []
+            page_url: str | None = (
+                f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams({'$top': '100', '$select': CONTACT_SELECT})}"
+            )
+            pages_remaining = max(1, min(maxPages, 10))
+            while page_url and pages_remaining > 0 and len(contacts) < top:
+                result = await self._request(page_url)
+                contacts.extend(
+                    contact
+                    for contact in [
+                        self._map_contact(raw) for raw in result.get("value", [])
+                    ]
+                    if self._contact_matches_query(contact, query_text)
+                )
+                page_url = result.get("@odata.nextLink")
+                pages_remaining -= 1
+            contacts = contacts[:top]
+
+        return ContactsSearchResult(
+            mailbox=normalized_mailbox or "me",
+            query=query,
+            contacts=contacts,
+        )
+
+    async def get_contact(
+        self,
+        *,
+        mailbox: str | None = None,
+        contactId: str,
+        folderId: str | None = None,
+    ) -> ContactGetResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        path = (
+            f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}"
+        )
+        contact = await self._request(
+            f"{path}?{httpx.QueryParams({'$select': CONTACT_SELECT})}"
+        )
+        return ContactGetResult(
+            mailbox=normalized_mailbox or "me",
+            contact=self._map_contact(contact),
+        )
+
+    async def create_contact(
+        self,
+        *,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+        displayName: str | None = None,
+        givenName: str | None = None,
+        surname: str | None = None,
+        emailAddresses: list[str] | None = None,
+        companyName: str | None = None,
+        jobTitle: str | None = None,
+        businessPhones: list[str] | None = None,
+        mobilePhone: str | None = None,
+    ) -> ContactMutationResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        contact = await self._request(
+            self._contacts_path(normalized_mailbox, folderId),
+            method="POST",
+            json_body=self._contact_payload(
+                displayName=displayName,
+                givenName=givenName,
+                surname=surname,
+                emailAddresses=emailAddresses,
+                companyName=companyName,
+                jobTitle=jobTitle,
+                businessPhones=businessPhones,
+                mobilePhone=mobilePhone,
+            ),
+        )
+        return ContactMutationResult(
+            mailbox=normalized_mailbox or "me",
+            contact=self._map_contact(contact),
+        )
+
+    async def update_contact(
+        self,
+        *,
+        mailbox: str | None = None,
+        contactId: str,
+        folderId: str | None = None,
+        displayName: str | None = None,
+        givenName: str | None = None,
+        surname: str | None = None,
+        emailAddresses: list[str] | None = None,
+        companyName: str | None = None,
+        jobTitle: str | None = None,
+        businessPhones: list[str] | None = None,
+        mobilePhone: str | None = None,
+    ) -> ContactMutationResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        contact = await self._request(
+            f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}",
+            method="PATCH",
+            json_body=self._contact_payload(
+                displayName=displayName,
+                givenName=givenName,
+                surname=surname,
+                emailAddresses=emailAddresses,
+                companyName=companyName,
+                jobTitle=jobTitle,
+                businessPhones=businessPhones,
+                mobilePhone=mobilePhone,
+            ),
+        )
+        return ContactMutationResult(
+            mailbox=normalized_mailbox or "me",
+            contact=self._map_contact(contact),
+        )
+
+    async def delete_contact(
+        self,
+        *,
+        mailbox: str | None = None,
+        contactId: str,
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        await self._request(
+            f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}",
+            method="DELETE",
+        )
+        return ContactMutationResult(
+            mailbox=normalized_mailbox or "me",
+            contactId=contactId,
+            deleted=True,
+        )
+
+    async def list_contact_folders(
+        self,
+        *,
+        mailbox: str | None = None,
+        parentFolderId: str | None = None,
+        top: int = 100,
+    ) -> ContactFoldersResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        path = (
+            f"{base}/contactFolders/{quote(parentFolderId, safe='')}/childFolders"
+            if parentFolderId
+            else f"{base}/contactFolders"
+        )
+        params = httpx.QueryParams(
+            {"$top": str(min(top, 100)), "$select": CONTACT_FOLDER_SELECT}
+        )
+        result = await self._request(f"{path}?{params}")
+        return ContactFoldersResult(
+            mailbox=normalized_mailbox or "me",
+            parentFolderId=parentFolderId,
+            folders=[
+                self._map_contact_folder(folder) for folder in result.get("value", [])
+            ],
         )
 
     async def list_events(
@@ -330,6 +1035,150 @@ class MicrosoftGraphClient:
         )
         return str(folder["id"])
 
+    async def _patch_message(
+        self,
+        *,
+        mailbox: str | None,
+        messageId: str,
+        payload: dict[str, Any],
+    ) -> MailUpdateMessageResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        message = await self._request(
+            f"{base}/messages/{quote(messageId, safe='')}",
+            method="PATCH",
+            json_body=payload,
+        )
+        return MailUpdateMessageResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            message=self._map_message_summary(message),
+        )
+
+    async def _get_mail_folder(self, base_path: str, folder_id: str) -> MailFolderInfo:
+        folder = await self._request(
+            f"{base_path}/mailFolders/{quote(folder_id, safe='')}?$select={MAIL_FOLDER_SELECT}"
+        )
+        return self._map_mail_folder(folder)
+
+    async def _list_mail_folder_infos(
+        self,
+        base_path: str,
+        *,
+        parentFolderId: str | None,
+        top: int = 100,
+        currentPath: str | None = None,
+    ) -> list[MailFolderInfo]:
+        path = (
+            f"{base_path}/mailFolders/{quote(parentFolderId, safe='')}/childFolders"
+            if parentFolderId
+            else f"{base_path}/mailFolders"
+        )
+        params = httpx.QueryParams(
+            {
+                "$top": str(min(top, 100)),
+                "$select": MAIL_FOLDER_SELECT,
+            }
+        )
+        result = await self._request(f"{path}?{params}")
+        folders = [
+            self._map_mail_folder(folder)
+            for folder in result.get("value", [])
+        ]
+        if currentPath is not None:
+            for folder in folders:
+                folder.path = f"{currentPath}/{folder.displayName}"
+        return folders
+
+    async def _list_mail_folder_tree(
+        self,
+        base_path: str,
+        *,
+        parentFolderId: str | None,
+        maxDepth: int,
+        currentPath: str | None,
+    ) -> list[MailFolderTreeNode]:
+        folders = await self._list_mail_folder_infos(
+            base_path,
+            parentFolderId=parentFolderId,
+            currentPath=currentPath,
+        )
+        nodes: list[MailFolderTreeNode] = []
+        for folder in folders:
+            path = folder.path or folder.displayName
+            children = (
+                await self._list_mail_folder_tree(
+                    base_path,
+                    parentFolderId=folder.id,
+                    maxDepth=maxDepth - 1,
+                    currentPath=path,
+                )
+                if maxDepth > 1 and folder.childFolderCount > 0
+                else []
+            )
+            node_data = folder.model_dump(mode="python")
+            node_data["path"] = path
+            nodes.append(MailFolderTreeNode(**node_data, childFolders=children))
+        return nodes
+
+    async def _find_mail_folder_child(
+        self,
+        base_path: str,
+        *,
+        parentFolderId: str | None,
+        displayName: str,
+    ) -> MailFolderInfo:
+        folders = await self._list_mail_folder_infos(
+            base_path,
+            parentFolderId=parentFolderId,
+        )
+        matches = [
+            folder
+            for folder in folders
+            if folder.displayName.lower() == displayName.lower() or folder.id == displayName
+        ]
+        if not matches:
+            raise RuntimeError(f"Mail folder was not found: {displayName}")
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"Multiple mail folders named {displayName!r}; use parentFolderId or folderId"
+            )
+        return matches[0]
+
+    async def _resolve_mail_folder_by_path(
+        self,
+        base_path: str,
+        folder_path: str,
+    ) -> MailFolderInfo:
+        parts = [part.strip() for part in folder_path.split("/") if part.strip()]
+        if not parts:
+            raise RuntimeError("folderPath must contain at least one folder name")
+        parent_id: str | None = None
+        resolved: MailFolderInfo | None = None
+        path_parts: list[str] = []
+        for part in parts:
+            resolved = await self._find_mail_folder_child(
+                base_path,
+                parentFolderId=parent_id,
+                displayName=part,
+            )
+            path_parts.append(resolved.displayName)
+            resolved.path = "/".join(path_parts)
+            parent_id = resolved.id
+        if resolved is None:  # pragma: no cover - parts guard above
+            raise RuntimeError("folderPath was invalid")
+        return resolved
+
+    def _mail_folder_messages_path(
+        self,
+        base_path: str,
+        folder: str,
+        folder_id: str | None,
+    ) -> str:
+        if folder_id:
+            return f"{base_path}/mailFolders/{quote(folder_id, safe='')}/messages"
+        return f"{base_path}/mailFolders('{quote(folder, safe='')}')/messages"
+
     def _base_path(self, mailbox: str | None) -> str:
         return f"/users/{quote(mailbox, safe='')}" if mailbox else "/me"
 
@@ -349,14 +1198,20 @@ class MicrosoftGraphClient:
         request_headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
+            "Prefer": 'IdType="ImmutableId"',
             **({"Content-Type": "application/json"} if json_body is not None else {}),
             **(headers or {}),
         }
 
         async with self._client() as client:
+            url = (
+                path
+                if path.startswith("https://")
+                else f"https://graph.microsoft.com/v1.0{path}"
+            )
             response = await client.request(
                 method,
-                f"https://graph.microsoft.com/v1.0{path}",
+                url,
                 headers=request_headers,
                 json=self._omit_none(json_body) if json_body is not None else None,
             )
@@ -387,11 +1242,142 @@ class MicrosoftGraphClient:
 
         return data
 
+    async def _request_bytes(self, path: str) -> bytes:
+        access_token = await self._auth_service.get_access_token()
+        async with self._client() as client:
+            response = await client.request(
+                "GET",
+                f"https://graph.microsoft.com/v1.0{path}",
+                headers={
+                    "Accept": "*/*",
+                    "Authorization": f"Bearer {access_token}",
+                    "Prefer": 'IdType="ImmutableId"',
+                },
+            )
+
+        if not response.is_success:
+            detail = response.reason_phrase
+            if response.text:
+                try:
+                    data = response.json()
+                    if isinstance(data, dict):
+                        detail = (
+                            data.get("error", {}).get("message")
+                            or data.get("error_description")
+                            or detail
+                        )
+                except Exception:
+                    detail = response.text
+            raise RuntimeError(
+                f"Microsoft Graph request failed ({response.status_code}): {detail}"
+            )
+
+        return response.content
+
     def _to_recipients(self, addresses: list[str] | None) -> list[dict[str, Any]] | None:
         cleaned = [address for address in (addresses or []) if address]
         if not cleaned:
             return None
         return [{"emailAddress": {"address": address}} for address in cleaned]
+
+    def _message_filters(
+        self,
+        *,
+        isRead: bool | None,
+        hasAttachments: bool | None,
+        importance: str | None,
+        categories: list[str] | None,
+        flagStatus: str | None,
+    ) -> list[str]:
+        filters: list[str] = []
+        if isRead is not None:
+            filters.append(f"isRead eq {'true' if isRead else 'false'}")
+        if hasAttachments is not None:
+            filters.append(
+                f"hasAttachments eq {'true' if hasAttachments else 'false'}"
+            )
+        if importance:
+            filters.append(f"importance eq '{self._escape_odata_string(importance)}'")
+        for category in categories or []:
+            filters.append(
+                "categories/any(c:c eq "
+                f"'{self._escape_odata_string(category)}')"
+            )
+        if flagStatus:
+            filters.append(
+                f"flag/flagStatus eq '{self._escape_odata_string(flagStatus)}'"
+            )
+        return filters
+
+    def _escape_odata_string(self, value: str) -> str:
+        return value.replace("'", "''")
+
+    def _contacts_path(self, mailbox: str | None, folder_id: str | None) -> str:
+        base = self._base_path(mailbox)
+        if folder_id:
+            return f"{base}/contactFolders/{quote(folder_id, safe='')}/contacts"
+        return f"{base}/contacts"
+
+    def _contact_payload(
+        self,
+        *,
+        displayName: str | None,
+        givenName: str | None,
+        surname: str | None,
+        emailAddresses: list[str] | None,
+        companyName: str | None,
+        jobTitle: str | None,
+        businessPhones: list[str] | None,
+        mobilePhone: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "displayName": displayName,
+            "givenName": givenName,
+            "surname": surname,
+            "companyName": companyName,
+            "jobTitle": jobTitle,
+            "businessPhones": businessPhones,
+            "mobilePhone": mobilePhone,
+            "emailAddresses": [
+                {"address": address, "name": displayName or address}
+                for address in (emailAddresses or [])
+                if address
+            ]
+            if emailAddresses is not None
+            else None,
+        }
+
+    def _contact_matches_query(self, contact: ContactInfo, query: str) -> bool:
+        needle = query.lower()
+        haystack = [
+            contact.displayName,
+            contact.givenName,
+            contact.surname,
+            contact.companyName,
+            contact.jobTitle,
+            contact.mobilePhone,
+            *contact.businessPhones,
+            *contact.emailAddresses,
+        ]
+        return any(needle in value.lower() for value in haystack if value)
+
+    def _attachment_unsupported_reason(
+        self,
+        attachment: AttachmentInfo,
+        *,
+        maxBytes: int,
+    ) -> str | None:
+        if attachment.attachmentType not in (None, "#microsoft.graph.fileAttachment"):
+            return "Only file attachments can be read as content in this MCP server"
+        if attachment.size is not None and attachment.size > maxBytes:
+            return f"Attachment size exceeds maxBytes={maxBytes}"
+        content_type = (attachment.contentType or "").split(";")[0].strip().lower()
+        name = (attachment.name or "").lower()
+        is_safe_type = content_type.startswith("text/") or content_type in SAFE_ATTACHMENT_CONTENT_TYPES
+        is_safe_extension = any(name.endswith(extension) for extension in SAFE_ATTACHMENT_EXTENSIONS)
+        if not is_safe_type and not is_safe_extension:
+            return "Attachment content type is not text-like and was not returned"
+        return None
 
     def _graph_body_content_type(self, body_type: str) -> str:
         match body_type.lower():
@@ -413,16 +1399,104 @@ class MicrosoftGraphClient:
             return [self._omit_none(item) for item in value]
         return value
 
+    def _map_mail_folder(self, folder: dict[str, Any]) -> MailFolderInfo:
+        return MailFolderInfo(
+            id=str(folder["id"]),
+            displayName=str(folder.get("displayName") or ""),
+            parentFolderId=self._nullable_string(folder.get("parentFolderId")),
+            childFolderCount=int(folder.get("childFolderCount") or 0),
+            totalItemCount=int(folder.get("totalItemCount") or 0),
+            unreadItemCount=int(folder.get("unreadItemCount") or 0),
+            isHidden=(
+                bool(folder["isHidden"])
+                if folder.get("isHidden") is not None
+                else None
+            ),
+        )
+
+    def _map_attachment(self, attachment: dict[str, Any]) -> AttachmentInfo:
+        return AttachmentInfo(
+            id=str(attachment["id"]),
+            name=self._nullable_string(attachment.get("name")),
+            contentType=self._nullable_string(attachment.get("contentType")),
+            size=int(attachment.get("size") or 0)
+            if attachment.get("size") is not None
+            else None,
+            isInline=bool(attachment.get("isInline", False)),
+            lastModifiedDateTime=self._nullable_string(
+                attachment.get("lastModifiedDateTime")
+            ),
+            attachmentType=self._nullable_string(attachment.get("@odata.type")),
+        )
+
+    def _map_category(self, category: dict[str, Any]) -> MailCategoryInfo:
+        return MailCategoryInfo(
+            id=self._nullable_string(category.get("id")),
+            displayName=str(category.get("displayName") or ""),
+            color=self._nullable_string(category.get("color")),
+        )
+
+    def _map_contact_folder(self, folder: dict[str, Any]) -> ContactFolderInfo:
+        return ContactFolderInfo(
+            id=str(folder["id"]),
+            displayName=str(folder.get("displayName") or ""),
+            parentFolderId=self._nullable_string(folder.get("parentFolderId")),
+            childFolderCount=int(folder.get("childFolderCount") or 0),
+        )
+
+    def _map_contact(self, contact: dict[str, Any]) -> ContactInfo:
+        return ContactInfo(
+            id=str(contact["id"]),
+            displayName=self._nullable_string(contact.get("displayName")),
+            givenName=self._nullable_string(contact.get("givenName")),
+            surname=self._nullable_string(contact.get("surname")),
+            companyName=self._nullable_string(contact.get("companyName")),
+            jobTitle=self._nullable_string(contact.get("jobTitle")),
+            businessPhones=[
+                str(phone) for phone in (contact.get("businessPhones") or []) if phone
+            ],
+            mobilePhone=self._nullable_string(contact.get("mobilePhone")),
+            emailAddresses=[
+                address
+                for address in [
+                    self._nullable_string(
+                        email.get("address") if isinstance(email, dict) else email
+                    )
+                    for email in (contact.get("emailAddresses") or [])
+                ]
+                if address
+            ],
+        )
+
     def _map_message_summary(self, message: dict[str, Any]) -> MessageSummary:
         return MessageSummary(
             id=str(message["id"]),
             subject=str(message.get("subject") or ""),
             from_=self._map_email_address(message.get("from")),
+            sender=self._map_email_address(message.get("sender")),
+            replyTo=self._map_recipients(message.get("replyTo")),
             receivedDateTime=self._nullable_string(message.get("receivedDateTime")),
             sentDateTime=self._nullable_string(message.get("sentDateTime")),
             bodyPreview=str(message.get("bodyPreview") or ""),
             webLink=self._nullable_string(message.get("webLink")),
             isDraft=bool(message.get("isDraft", False)),
+            isRead=(
+                bool(message["isRead"])
+                if message.get("isRead") is not None
+                else None
+            ),
+            hasAttachments=(
+                bool(message["hasAttachments"])
+                if message.get("hasAttachments") is not None
+                else None
+            ),
+            importance=self._nullable_string(message.get("importance")),
+            categories=[
+                str(category) for category in (message.get("categories") or [])
+            ],
+            flagStatus=self._nullable_string((message.get("flag") or {}).get("flagStatus")),
+            parentFolderId=self._nullable_string(message.get("parentFolderId")),
+            internetMessageId=self._nullable_string(message.get("internetMessageId")),
             conversationId=self._nullable_string(message.get("conversationId")),
         )
 
@@ -432,6 +1506,8 @@ class MicrosoftGraphClient:
             id=str(message["id"]),
             subject=str(message.get("subject") or ""),
             from_=self._map_email_address(message.get("from")),
+            sender=self._map_email_address(message.get("sender")),
+            replyTo=self._map_recipients(message.get("replyTo")),
             to=self._map_recipients(message.get("toRecipients")),
             cc=self._map_recipients(message.get("ccRecipients")),
             bcc=self._map_recipients(message.get("bccRecipients")),
@@ -444,7 +1520,23 @@ class MicrosoftGraphClient:
             ),
             webLink=self._nullable_string(message.get("webLink")),
             isDraft=bool(message.get("isDraft", False)),
+            isRead=(
+                bool(message["isRead"])
+                if message.get("isRead") is not None
+                else None
+            ),
+            hasAttachments=(
+                bool(message["hasAttachments"])
+                if message.get("hasAttachments") is not None
+                else None
+            ),
             importance=self._nullable_string(message.get("importance")),
+            categories=[
+                str(category) for category in (message.get("categories") or [])
+            ],
+            flagStatus=self._nullable_string((message.get("flag") or {}).get("flagStatus")),
+            parentFolderId=self._nullable_string(message.get("parentFolderId")),
+            internetMessageId=self._nullable_string(message.get("internetMessageId")),
             conversationId=self._nullable_string(message.get("conversationId")),
         )
 

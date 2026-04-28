@@ -86,9 +86,12 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AppConfig:
                 "profile",
                 "email",
                 "offline_access",
+                "Mail.ReadWrite",
                 "Mail.ReadWrite.Shared",
                 "Mail.Send.Shared",
                 "Calendars.ReadWrite.Shared",
+                "Contacts.ReadWrite.Shared",
+                "MailboxSettings.ReadWrite",
             ],
         ),
         encryptionKey=_parse_encryption_key(source, "TOKEN_ENCRYPTION_KEY"),
@@ -99,4 +102,3 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AppConfig:
 
 def load_config() -> AppConfig:
     return build_config_from_env()
-
