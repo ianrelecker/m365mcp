@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -159,12 +161,51 @@ class MailSendDraftResult(AppModel):
     sent: bool
 
 
+class MailSendResult(AppModel):
+    mailbox: str
+    subject: str | None = None
+    messageId: str | None = None
+    replyAll: bool | None = None
+    sent: bool
+
+
 class MailMoveResult(AppModel):
     mailbox: str
     destinationFolder: str
     destinationFolderId: str | None = None
     destinationFolderPath: str | None = None
     movedMessage: MessageSummary
+
+
+class MailFolderMutationResult(AppModel):
+    mailbox: str
+    folder: MailFolderInfo | None = None
+    folderId: str | None = None
+    deleted: bool = False
+
+
+class MailRuleInfo(AppModel):
+    id: str
+    displayName: str
+    sequence: int | None = None
+    isEnabled: bool | None = None
+    hasError: bool | None = None
+    isReadOnly: bool | None = None
+    conditions: dict[str, Any] = Field(default_factory=dict)
+    actions: dict[str, Any] = Field(default_factory=dict)
+    exceptions: dict[str, Any] = Field(default_factory=dict)
+
+
+class MailListRulesResult(AppModel):
+    mailbox: str
+    rules: list[MailRuleInfo]
+
+
+class MailRuleResult(AppModel):
+    mailbox: str
+    rule: MailRuleInfo | None = None
+    ruleId: str | None = None
+    deleted: bool = False
 
 
 class AttachmentInfo(AppModel):
@@ -310,6 +351,17 @@ class CalendarListEventsResult(AppModel):
 class CalendarCreateEventResult(AppModel):
     mailbox: str
     event: CalendarEvent
+
+
+class CalendarUpdateEventResult(AppModel):
+    mailbox: str
+    event: CalendarEvent
+
+
+class CalendarDeleteEventResult(AppModel):
+    mailbox: str
+    eventId: str
+    deleted: bool
 
 
 class StoredMicrosoftTokens(AppModel):

@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 
+from m365_mcp import microsoft_graph as graph_module
 from m365_mcp.microsoft_graph import MicrosoftGraphClient
 
 
@@ -186,6 +187,60 @@ async def test_create_send_and_move_message() -> None:
 
 
 @pytest.mark.anyio
+async def test_direct_send_and_reply() -> None:
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8")) if request.content else None
+        requests.append((request.method, request.url.path, body))
+
+        if request.method == "POST" and request.url.path.endswith("/sendMail"):
+            assert body == {
+                "message": {
+                    "subject": "Quick note",
+                    "body": {"contentType": "Text", "content": "Hello"},
+                    "toRecipients": [
+                        {"emailAddress": {"address": "a@example.com"}}
+                    ],
+                },
+                "saveToSentItems": True,
+            }
+            return httpx.Response(202)
+
+        if request.method == "POST" and request.url.path.endswith("/messages/msg-1/replyAll"):
+            assert body == {
+                "message": {
+                    "body": {"contentType": "HTML", "content": "<p>Thanks</p>"}
+                }
+            }
+            return httpx.Response(202)
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    sent = await graph.send_mail(
+        subject="Quick note",
+        to=["a@example.com"],
+        body="Hello",
+    )
+    assert sent.sent is True
+    assert sent.subject == "Quick note"
+
+    replied = await graph.send_reply(
+        messageId="msg-1",
+        comment="<p>Thanks</p>",
+        replyAll=True,
+    )
+    assert replied.sent is True
+    assert replied.messageId == "msg-1"
+    assert len(requests) == 2
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_create_draft_omits_empty_optional_fields() -> None:
     captured_body: dict[str, object] | None = None
 
@@ -353,6 +408,176 @@ async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
     )
     assert moved.destinationFolderId == "acme-id"
     assert requests[-1][3] == {"destinationId": "acme-id"}
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_folder_mutations_and_rules() -> None:
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8")) if request.content else None
+        requests.append((request.method, request.url.path, body))
+
+        if request.url.path.endswith("/mailFolders") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "inbox-id",
+                            "displayName": "Inbox",
+                            "childFolderCount": 1,
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/inbox-id/childFolders") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "clients-id",
+                            "displayName": "Clients",
+                            "parentFolderId": "inbox-id",
+                            "childFolderCount": 0,
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/clients-id/childFolders") and request.method == "POST":
+            assert body == {"displayName": "Acme"}
+            return httpx.Response(
+                201,
+                json={
+                    "id": "acme-id",
+                    "displayName": "Acme",
+                    "parentFolderId": "clients-id",
+                    "childFolderCount": 0,
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/acme-id") and request.method == "PATCH":
+            assert body == {"displayName": "Acme Corp"}
+            return httpx.Response(
+                200,
+                json={
+                    "id": "acme-id",
+                    "displayName": "Acme Corp",
+                    "parentFolderId": "clients-id",
+                    "childFolderCount": 0,
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/acme-id") and request.method == "DELETE":
+            return httpx.Response(204)
+
+        if request.url.path.endswith("/mailFolders/inbox/messageRules") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "rule-1",
+                            "displayName": "Clients",
+                            "sequence": 1,
+                            "isEnabled": True,
+                            "actions": {"markAsRead": True},
+                            "conditions": {"senderContains": ["client"]},
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/inbox/messageRules") and request.method == "POST":
+            assert body == {
+                "displayName": "Move Acme",
+                "sequence": 2,
+                "isEnabled": True,
+                "conditions": {
+                    "senderContains": ["acme"],
+                    "subjectContains": ["Invoice"],
+                },
+                "actions": {
+                    "moveToFolder": "clients-id",
+                    "markAsRead": True,
+                    "assignCategories": ["Client"],
+                },
+            }
+            return httpx.Response(
+                201,
+                json={
+                    "id": "rule-2",
+                    "displayName": "Move Acme",
+                    "sequence": 2,
+                    "isEnabled": True,
+                    "actions": body["actions"],
+                    "conditions": body["conditions"],
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/inbox/messageRules/rule-2") and request.method == "PATCH":
+            assert body == {"displayName": "Move Acme invoices", "isEnabled": False}
+            return httpx.Response(
+                200,
+                json={
+                    "id": "rule-2",
+                    "displayName": "Move Acme invoices",
+                    "sequence": 2,
+                    "isEnabled": False,
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/inbox/messageRules/rule-2") and request.method == "DELETE":
+            return httpx.Response(204)
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    created_folder = await graph.create_mail_folder(
+        displayName="Acme",
+        parentFolderPath="Inbox/Clients",
+    )
+    assert created_folder.folder.id == "acme-id"
+
+    renamed_folder = await graph.rename_mail_folder(
+        folderId="acme-id",
+        displayName="Acme Corp",
+    )
+    assert renamed_folder.folder.displayName == "Acme Corp"
+
+    deleted_folder = await graph.delete_mail_folder(folderId="acme-id")
+    assert deleted_folder.deleted is True
+
+    rules = await graph.list_mail_rules()
+    assert rules.rules[0].displayName == "Clients"
+
+    created_rule = await graph.create_mail_rule(
+        displayName="Move Acme",
+        sequence=2,
+        senderContains=["acme"],
+        subjectContains=["Invoice"],
+        moveToFolderPath="Inbox/Clients",
+        markAsRead=True,
+        assignCategories=["Client"],
+    )
+    assert created_rule.rule.id == "rule-2"
+
+    updated_rule = await graph.update_mail_rule(
+        ruleId="rule-2",
+        displayName="Move Acme invoices",
+        isEnabled=False,
+    )
+    assert updated_rule.rule.isEnabled is False
+
+    deleted_rule = await graph.delete_mail_rule(ruleId="rule-2")
+    assert deleted_rule.deleted is True
 
     await client.aclose()
 
@@ -541,6 +766,55 @@ async def test_attachments_threads_and_categories() -> None:
 
 
 @pytest.mark.anyio
+async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakePage:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def extract_text(self) -> str:
+            return self._text
+
+    class FakePdfReader:
+        def __init__(self, stream: object) -> None:
+            self.pages = [FakePage("First page"), FakePage("Second page")]
+
+    monkeypatch.setattr(graph_module, "PdfReader", FakePdfReader)
+    pdf_payload = base64.b64encode(b"%PDF fake content").decode("ascii")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments/pdf-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "pdf-1",
+                    "name": "brief.pdf",
+                    "contentType": "application/pdf",
+                    "size": 128,
+                    "contentBytes": pdf_payload,
+                },
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    content = await graph.get_attachment_content(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        maxChars=20,
+    )
+
+    assert content.encoding == "pdf-text"
+    assert content.content == "--- Page 1 ---\nFirst"
+    assert content.truncated is True
+    assert "maxChars=20" in content.unsupportedReason
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_contacts_crud_search_and_folders() -> None:
     requests: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
 
@@ -694,6 +968,35 @@ async def test_list_and_create_events_and_graph_errors() -> None:
                 },
             )
 
+        if request.url.path.endswith("/calendar/events/event-2") and request.method == "PATCH":
+            assert body == {
+                "subject": "Updated event",
+                "start": {"dateTime": "2026-04-23T18:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-04-23T19:00:00", "timeZone": "UTC"},
+                "attendees": [
+                    {
+                        "emailAddress": {"address": "new@example.com"},
+                        "type": "required",
+                    }
+                ],
+                "location": {"displayName": "Room 2"},
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "id": "event-2",
+                    "subject": "Updated event",
+                    "start": {"dateTime": "2026-04-23T18:00:00", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-04-23T19:00:00", "timeZone": "UTC"},
+                    "attendees": [],
+                    "bodyPreview": "",
+                    "body": {"contentType": "text", "content": ""},
+                },
+            )
+
+        if request.url.path.endswith("/calendar/events/event-2") and request.method == "DELETE":
+            return httpx.Response(204)
+
         if request.url.path.endswith("/messages/bad-id"):
             return httpx.Response(
                 404,
@@ -717,6 +1020,23 @@ async def test_list_and_create_events_and_graph_errors() -> None:
         bodyType="html",
     )
     assert created.event.id == "event-2"
+
+    updated = await graph.update_event(
+        eventId="event-2",
+        mailbox="shared@example.com",
+        subject="Updated event",
+        start="2026-04-23T18:00:00",
+        end="2026-04-23T19:00:00",
+        attendees=["new@example.com"],
+        location="Room 2",
+    )
+    assert updated.event.subject == "Updated event"
+
+    deleted = await graph.delete_event(
+        eventId="event-2",
+        mailbox="shared@example.com",
+    )
+    assert deleted.deleted is True
 
     with pytest.raises(RuntimeError, match="ErrorItemNotFound: No such message"):
         await graph.get_message(messageId="bad-id")

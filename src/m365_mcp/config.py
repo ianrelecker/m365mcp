@@ -88,6 +88,7 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AppConfig:
                 "offline_access",
                 "Mail.ReadWrite",
                 "Mail.ReadWrite.Shared",
+                "Mail.Send",
                 "Mail.Send.Shared",
                 "Calendars.ReadWrite.Shared",
                 "Contacts.ReadWrite.Shared",
