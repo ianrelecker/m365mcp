@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 import httpx
@@ -223,6 +224,421 @@ async def test_create_draft_omits_empty_optional_fields() -> None:
         "subject": "Minimal",
         "body": {"contentType": "Text", "content": "Hello"},
     }
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
+    requests: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8")) if request.content else None
+        requests.append((request.method, request.url.path, dict(request.url.params), body))
+
+        if request.url.path.endswith("/mailFolders") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "inbox-id",
+                            "displayName": "Inbox",
+                            "childFolderCount": 1,
+                            "totalItemCount": 10,
+                            "unreadItemCount": 2,
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/inbox-id/childFolders"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "clients-id",
+                            "displayName": "Clients",
+                            "parentFolderId": "inbox-id",
+                            "childFolderCount": 1,
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/clients-id/childFolders"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "acme-id",
+                            "displayName": "Acme",
+                            "parentFolderId": "clients-id",
+                            "childFolderCount": 0,
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/mailFolders/acme-id/messages") and request.method == "GET":
+            assert request.url.params["$filter"] == (
+                "isRead eq false and hasAttachments eq true and "
+                "importance eq 'high' and categories/any(c:c eq 'Client') and "
+                "flag/flagStatus eq 'flagged'"
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "m-nav",
+                            "subject": "Needs review",
+                            "from": {"emailAddress": {"address": "client@example.com"}},
+                            "sender": {"emailAddress": {"address": "assistant@example.com"}},
+                            "replyTo": [{"emailAddress": {"address": "reply@example.com"}}],
+                            "bodyPreview": "Please review",
+                            "isDraft": False,
+                            "isRead": False,
+                            "hasAttachments": True,
+                            "importance": "high",
+                            "categories": ["Client"],
+                            "flag": {"flagStatus": "flagged"},
+                            "parentFolderId": "acme-id",
+                            "internetMessageId": "<message@example.com>",
+                            "conversationId": "conv-nav",
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/messages/m-nav/move"):
+            return httpx.Response(
+                200,
+                json={"id": "m-nav", "subject": "Moved", "bodyPreview": "", "isDraft": False},
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    tree = await graph.mail_folder_tree(maxDepth=3)
+    assert tree.folders[0].childFolders[0].childFolders[0].path == "Inbox/Clients/Acme"
+
+    resolved = await graph.resolve_mail_folder(folderPath="Inbox/Clients/Acme")
+    assert resolved.folder.id == "acme-id"
+
+    listed = await graph.list_messages(
+        folderPath="Inbox/Clients/Acme",
+        isRead=False,
+        hasAttachments=True,
+        importance="high",
+        categories=["Client"],
+        flagStatus="flagged",
+    )
+    message = listed.messages[0]
+    assert message.sender == "assistant@example.com"
+    assert message.replyTo == ["reply@example.com"]
+    assert message.isRead is False
+    assert message.hasAttachments is True
+    assert message.categories == ["Client"]
+    assert message.flagStatus == "flagged"
+    assert message.parentFolderId == "acme-id"
+
+    moved = await graph.move_message(
+        messageId="m-nav",
+        destinationFolder="Inbox/Clients/Acme",
+    )
+    assert moved.destinationFolderId == "acme-id"
+    assert requests[-1][3] == {"destinationId": "acme-id"}
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_attachments_threads_and_categories() -> None:
+    text_payload = base64.b64encode(b"hello attachment").decode("ascii")
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8")) if request.content else None
+        requests.append((request.method, request.url.path, body))
+
+        if request.url.path.endswith("/messages/msg-1/attachments") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "att-1",
+                            "name": "notes.txt",
+                            "contentType": "text/plain",
+                            "size": 16,
+                            "isInline": False,
+                        },
+                        {
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "att-inline",
+                            "name": "pixel.png",
+                            "contentType": "image/png",
+                            "size": 10,
+                            "isInline": True,
+                        },
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/messages/msg-1/attachments/att-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "att-1",
+                    "name": "notes.txt",
+                    "contentType": "text/plain",
+                    "size": 16,
+                    "contentBytes": text_payload,
+                },
+            )
+
+        if request.url.path.endswith("/messages/msg-1/attachments/bin-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "bin-1",
+                    "name": "image.png",
+                    "contentType": "image/png",
+                    "size": 16,
+                },
+            )
+
+        if request.url.path.endswith("/messages/msg-1/createReplyAll"):
+            assert body == {
+                "message": {
+                    "body": {"contentType": "HTML", "content": "<p>Thanks</p>"}
+                }
+            }
+            return httpx.Response(
+                201,
+                json={
+                    "id": "reply-draft",
+                    "subject": "Re: Hello",
+                    "bodyPreview": "Thanks",
+                    "isDraft": True,
+                    "conversationId": "conv-1",
+                },
+            )
+
+        if request.url.path.endswith("/messages") and "conversationId" in request.url.params.get("$filter", ""):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "subject": "Hello",
+                            "bodyPreview": "First",
+                            "isDraft": False,
+                            "conversationId": "conv-1",
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/outlook/masterCategories") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "cat-1", "displayName": "Client", "color": "preset1"}]},
+            )
+
+        if request.url.path.endswith("/outlook/masterCategories") and request.method == "POST":
+            return httpx.Response(
+                201,
+                json={"id": "cat-2", "displayName": body["displayName"], "color": body["color"]},
+            )
+
+        if request.url.path.endswith("/outlook/masterCategories/cat-2") and request.method == "PATCH":
+            return httpx.Response(
+                200,
+                json={"id": "cat-2", "displayName": body["displayName"], "color": body["color"]},
+            )
+
+        if request.url.path.endswith("/outlook/masterCategories/cat-2") and request.method == "DELETE":
+            return httpx.Response(204)
+
+        if request.url.path.endswith("/messages/msg-1") and request.method == "PATCH":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg-1",
+                    "subject": "Hello",
+                    "bodyPreview": "",
+                    "isDraft": False,
+                    "categories": body.get("categories", []),
+                    "flag": body.get("flag", {}),
+                    "isRead": body.get("isRead"),
+                },
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    attachments = await graph.list_attachments(messageId="msg-1")
+    assert [attachment.id for attachment in attachments.attachments] == ["att-1"]
+
+    content = await graph.get_attachment_content(messageId="msg-1", attachmentId="att-1")
+    assert content.content == "hello attachment"
+
+    binary = await graph.get_attachment_content(messageId="msg-1", attachmentId="bin-1")
+    assert binary.content is None
+    assert binary.unsupportedReason is not None
+
+    thread = await graph.get_thread(conversationId="conv-1")
+    assert thread.messages[0].id == "msg-1"
+
+    reply = await graph.create_reply_draft(
+        messageId="msg-1",
+        comment="<p>Thanks</p>",
+        replyAll=True,
+    )
+    assert reply.draft.id == "reply-draft"
+
+    categories = await graph.list_categories()
+    assert categories.categories[0].displayName == "Client"
+
+    created = await graph.create_category(displayName="Prospect", color="preset2")
+    assert created.category.displayName == "Prospect"
+
+    updated = await graph.update_category(
+        categoryId="cat-2",
+        displayName="Customer",
+        color="preset3",
+    )
+    assert updated.category.color == "preset3"
+
+    deleted = await graph.delete_category(categoryId="cat-2")
+    assert deleted.deleted is True
+
+    categorized = await graph.set_message_categories(
+        messageId="msg-1",
+        categories=["Client"],
+    )
+    assert categorized.message.categories == ["Client"]
+
+    read = await graph.mark_message_read(messageId="msg-1", isRead=True)
+    assert read.message.isRead is True
+
+    flagged = await graph.set_message_flag(messageId="msg-1", flagStatus="flagged")
+    assert flagged.message.flagStatus == "flagged"
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_contacts_crud_search_and_folders() -> None:
+    requests: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
+
+    def contact(contact_id: str = "contact-1", name: str = "Ada Lovelace") -> dict[str, object]:
+        return {
+            "id": contact_id,
+            "displayName": name,
+            "givenName": "Ada",
+            "surname": "Lovelace",
+            "companyName": "Analytical Engines",
+            "jobTitle": "Mathematician",
+            "businessPhones": ["555-0100"],
+            "mobilePhone": "555-0101",
+            "emailAddresses": [{"address": "ada@example.com", "name": name}],
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8")) if request.content else None
+        requests.append((request.method, request.url.path, dict(request.url.params), body))
+
+        if request.url.path.endswith("/contactFolders") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "contacts-folder",
+                            "displayName": "VIP",
+                            "childFolderCount": 0,
+                        }
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/contacts") and request.method == "GET":
+            if "$filter" in request.url.params:
+                assert "emailAddresses/any" in request.url.params["$filter"]
+            return httpx.Response(200, json={"value": [contact()]})
+
+        if request.url.path.endswith("/contacts/contact-1") and request.method == "GET":
+            return httpx.Response(200, json=contact())
+
+        if request.url.path.endswith("/contacts") and request.method == "POST":
+            assert body["emailAddresses"] == [
+                {"address": "ada@example.com", "name": "Ada Lovelace"}
+            ]
+            return httpx.Response(201, json=contact("contact-new"))
+
+        if request.url.path.endswith("/contacts/contact-1") and request.method == "PATCH":
+            return httpx.Response(200, json=contact("contact-1", body["displayName"]))
+
+        if request.url.path.endswith("/contacts/contact-1") and request.method == "DELETE":
+            return httpx.Response(204)
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    folders = await graph.list_contact_folders(mailbox="shared@example.com")
+    assert folders.folders[0].displayName == "VIP"
+
+    listed = await graph.list_contacts(mailbox="shared@example.com")
+    assert listed.contacts[0].emailAddresses == ["ada@example.com"]
+
+    searched = await graph.search_contacts(
+        mailbox="shared@example.com",
+        query="ada@example.com",
+    )
+    assert searched.contacts[0].displayName == "Ada Lovelace"
+
+    got = await graph.get_contact(
+        mailbox="shared@example.com",
+        contactId="contact-1",
+    )
+    assert got.contact.companyName == "Analytical Engines"
+
+    created = await graph.create_contact(
+        mailbox="shared@example.com",
+        displayName="Ada Lovelace",
+        emailAddresses=["ada@example.com"],
+    )
+    assert created.contact.id == "contact-new"
+
+    updated = await graph.update_contact(
+        mailbox="shared@example.com",
+        contactId="contact-1",
+        displayName="Ada Byron",
+    )
+    assert updated.contact.displayName == "Ada Byron"
+
+    deleted = await graph.delete_contact(
+        mailbox="shared@example.com",
+        contactId="contact-1",
+    )
+    assert deleted.deleted is True
+
+    assert any("/users/shared@example.com/" in path for _, path, _, _ in requests)
 
     await client.aclose()
 

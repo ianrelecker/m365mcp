@@ -21,6 +21,9 @@ def test_build_config_parses_defaults_and_known_mailboxes() -> None:
     assert config.microsoft.redirectUri == "http://localhost:8787/auth/microsoft/callback"
     assert config.knownMailboxes == ["shared@company.com", "second@company.com"]
     assert config.encryptionKey == bytes(range(32))
+    assert "Contacts.ReadWrite.Shared" in config.microsoft.scopes
+    assert "MailboxSettings.ReadWrite" in config.microsoft.scopes
+    assert "Mail.ReadWrite" in config.microsoft.scopes
 
 
 def test_build_config_rejects_invalid_encryption_key() -> None:

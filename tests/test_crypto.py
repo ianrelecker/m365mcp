@@ -12,7 +12,7 @@ def test_encrypt_json_round_trip() -> None:
     assert decrypt_json(payload, TEST_KEY) == value
 
 
-def test_decrypts_node_compatible_payload() -> None:
+def test_decrypts_existing_aes_gcm_payload() -> None:
     payload = EncryptedPayload(
         iv="AAECAwQFBgcICQoL",
         tag="QZG7Dacsjb2NoqsIN4Pj6Q==",

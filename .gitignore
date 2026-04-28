@@ -1,11 +1,10 @@
-node_modules
 dist
 .env
 .env.local
 .env.*.local
 .tokens
-package-lock.json
 .venv
 __pycache__/
 .pytest_cache/
 *.pyc
+.DS_Store

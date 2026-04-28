@@ -108,7 +108,12 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
     async with create_connected_server_and_client_session(server, raise_exceptions=True) as session:
         tools = await session.list_tools()
         assert {tool.name for tool in tools.tools} == {
+            "m365_capabilities",
             "auth_status",
+            "mail_check_inbox",
+            "mail_list_folders",
+            "mail_folder_tree",
+            "mail_resolve_folder",
             "mail_list",
             "mail_search",
             "mail_get",
@@ -116,9 +121,41 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "mail_create_draft",
             "mail_send_draft",
             "mail_move",
+            "mail_list_attachments",
+            "mail_get_attachment_content",
+            "mail_get_thread",
+            "mail_create_reply_draft",
+            "mail_list_categories",
+            "mail_set_categories",
+            "mail_add_categories",
+            "mail_remove_categories",
+            "mail_clear_categories",
+            "mail_create_category",
+            "mail_update_category",
+            "mail_delete_category",
+            "mail_mark_read",
+            "mail_set_flag",
+            "contacts_list",
+            "contacts_search",
+            "contacts_get",
+            "contacts_create",
+            "contacts_update",
+            "contacts_delete",
+            "contacts_list_folders",
             "calendar_list_events",
             "calendar_create_event",
         }
+
+        resources = await session.list_resources()
+        assert {str(resource.uri) for resource in resources.resources} == {
+            "m365://capabilities"
+        }
+
+        capabilities = await session.call_tool("m365_capabilities", {})
+        assert "M365 MCP Capabilities" in capabilities.structuredContent["content"]
+
+        resource = await session.read_resource("m365://capabilities")
+        assert "M365 MCP Capabilities" in resource.contents[0].text
 
         auth_status = await session.call_tool("auth_status", {})
         assert auth_status.structuredContent == AuthStatusResult(

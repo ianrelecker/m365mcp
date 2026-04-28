@@ -138,18 +138,26 @@ class MicrosoftAuthService:
         await self._token_store.clear()
 
     async def get_status(self) -> MicrosoftConnectionStatus:
+        required_scopes = self._config.microsoft.scopes
         tokens = await self._load_tokens()
         if tokens is None:
             return MicrosoftConnectionStatus(
                 connected=False,
                 knownMailboxes=self._config.knownMailboxes,
+                requiredScopes=required_scopes,
+                grantedScopes=[],
+                missingScopes=required_scopes,
             )
 
+        granted_scopes = self._parse_scope_string(tokens.scope)
         return MicrosoftConnectionStatus(
             connected=True,
             account=tokens.account,
             expiresAt=tokens.expiresAt,
             knownMailboxes=self._config.knownMailboxes,
+            requiredScopes=required_scopes,
+            grantedScopes=granted_scopes,
+            missingScopes=self._missing_scopes(required_scopes, granted_scopes),
         )
 
     async def _load_tokens(self) -> StoredMicrosoftTokens | None:
@@ -187,6 +195,17 @@ class MicrosoftAuthService:
             )
 
         return data
+
+    def _parse_scope_string(self, value: str) -> list[str]:
+        return [scope for scope in value.split() if scope]
+
+    def _missing_scopes(
+        self,
+        required_scopes: list[str],
+        granted_scopes: list[str],
+    ) -> list[str]:
+        granted = {scope.lower() for scope in granted_scopes}
+        return [scope for scope in required_scopes if scope.lower() not in granted]
 
     async def _save_token_response(
         self,

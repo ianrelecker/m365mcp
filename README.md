@@ -2,14 +2,19 @@
 
 Local MCP server for one Microsoft 365 user. It lets Claude call Microsoft Graph with that user's delegated permissions, including shared or delegated mailboxes and calendars the user already has access to.
 
-This Python port runs with `uv` and the official MCP Python SDK. It starts two things in one process:
+This Python implementation runs with `uv` and the official MCP Python SDK. It starts two things in one process:
 
 - a stdio MCP server for Claude/Desktop-style clients
 - a localhost-only helper web app for Microsoft OAuth and status checks
 
 ## What it exposes
 
+- `m365_capabilities`
 - `auth_status`
+- `mail_check_inbox`
+- `mail_list_folders`
+- `mail_folder_tree`
+- `mail_resolve_folder`
 - `mail_list`
 - `mail_search`
 - `mail_get`
@@ -17,10 +22,32 @@ This Python port runs with `uv` and the official MCP Python SDK. It starts two t
 - `mail_create_draft`
 - `mail_send_draft`
 - `mail_move`
+- `mail_list_attachments`
+- `mail_get_attachment_content`
+- `mail_get_thread`
+- `mail_create_reply_draft`
+- `mail_list_categories`
+- `mail_set_categories`
+- `mail_add_categories`
+- `mail_remove_categories`
+- `mail_clear_categories`
+- `mail_create_category`
+- `mail_update_category`
+- `mail_delete_category`
+- `mail_mark_read`
+- `mail_set_flag`
+- `contacts_list`
+- `contacts_search`
+- `contacts_get`
+- `contacts_create`
+- `contacts_update`
+- `contacts_delete`
+- `contacts_list_folders`
 - `calendar_list_events`
 - `calendar_create_event`
 
-Every mail/calendar tool accepts an optional `mailbox` argument. Leave it blank for the signed-in user's own mailbox. Set it to something like `shared@company.com` for a shared or delegated mailbox/calendar.
+Every mail/calendar/contact tool accepts an optional `mailbox` argument. Leave it blank for the signed-in user's own mailbox. Set it to something like `shared@company.com` for a shared or delegated mailbox/calendar/contact folder.
+The model can also read [M365_MCP_CAPABILITIES.md](M365_MCP_CAPABILITIES.md) through the `m365_capabilities` tool or the `m365://capabilities` MCP resource.
 
 ## 1. Microsoft Entra setup
 
@@ -37,16 +64,21 @@ Create a client secret under `Certificates & secrets`, then copy the secret `Val
 
 Add delegated Microsoft Graph permissions:
 
+- `Mail.ReadWrite`
 - `Mail.ReadWrite.Shared`
 - `Mail.Send.Shared`
 - `Mail.Send` (optional, but reasonable if you also want an explicit non-shared send scope)
 - `Calendars.ReadWrite.Shared`
+- `Contacts.ReadWrite.Shared`
+- `MailboxSettings.ReadWrite`
 - `openid`
 - `profile`
 - `email`
 - `offline_access`
 
 If your tenant restricts user consent, grant admin consent for the enterprise app.
+
+If you are upgrading from an older version of this server, reconnect Microsoft after adding the new permissions. `auth_status` reports `requiredScopes`, `grantedScopes`, and `missingScopes` so Claude can tell when the local token needs a fresh consent.
 
 ## 2. Local config
 

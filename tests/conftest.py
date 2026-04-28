@@ -59,9 +59,12 @@ def config_factory(
                         "profile",
                         "email",
                         "offline_access",
+                        "Mail.ReadWrite",
                         "Mail.ReadWrite.Shared",
                         "Mail.Send.Shared",
                         "Calendars.ReadWrite.Shared",
+                        "Contacts.ReadWrite.Shared",
+                        "MailboxSettings.ReadWrite",
                     ],
                 )
             ),
