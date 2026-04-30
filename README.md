@@ -95,6 +95,8 @@ Important fields:
 - `MICROSOFT_CLIENT_SECRET`: the client secret `Value`.
 - `TOKEN_ENCRYPTION_KEY`: a base64 32-byte key used to encrypt the local token cache.
 - `KNOWN_MAILBOXES`: optional comma-separated shared mailboxes, such as `shared@company.com`.
+- `M365_AUDIT_LOG_ENABLED`: optional. Defaults to `true`.
+- `M365_AUDIT_LOG_FILE`: optional. Defaults to `.audit/m365-mcp-audit.jsonl`.
 
 Generate `TOKEN_ENCRYPTION_KEY` with:
 
@@ -303,8 +305,12 @@ Contacts and calendar:
 ## Security Notes
 
 - `.env`, `.env.local`, and `.tokens/` are local-only files and are ignored by git.
+- `.audit/` is local-only and ignored by git. It stores JSONL tool-call audit records for incident review.
 - `TOKEN_ENCRYPTION_KEY` encrypts the saved Microsoft token cache at rest. If you rotate or lose it, delete `.tokens/microsoft-graph-token.json` and reconnect Microsoft.
 - This server uses a confidential-client `Web` app registration, so `MICROSOFT_CLIENT_SECRET` is required.
+- Microsoft sign-in uses authorization-code flow with PKCE. PKCE hardens the login code exchange, but it does not reduce Microsoft Graph permissions or replace token protection.
+- Audit records include timestamp, tool name, outcome, mailbox, operation category, and key IDs such as message/event/folder/rule IDs when present.
+- Audit records do not include access tokens, refresh tokens, client secrets, encryption keys, email bodies, attachment content, draft body text, calendar body text, or raw Microsoft Graph payloads.
 - Treat `MICROSOFT_CLIENT_SECRET` like any other local credential and do not place it in shared configs or screenshots.
 - This is for local MCP clients, not `claude.ai` remote connectors.
 - No public HTTPS endpoint, IIS, WSL, Linux server, or public web server is required.

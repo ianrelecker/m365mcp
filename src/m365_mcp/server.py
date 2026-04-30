@@ -1,18 +1,20 @@
 import contextlib
 import socket
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urljoin
 
 import anyio
 import httpx
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ContentBlock
 from pydantic import Field
 
+from m365_mcp.audit import LocalAuditLogger
 from m365_mcp.config import AppConfig, load_config
 from m365_mcp.helper_app import create_helper_app
 from m365_mcp.microsoft_auth import MicrosoftAuthService
@@ -62,6 +64,7 @@ class RuntimeServices:
     microsoft_auth: MicrosoftAuthService
     graph: MicrosoftGraphClient
     http_client: httpx.AsyncClient
+    audit_logger: LocalAuditLogger | None = None
     owns_http_client: bool = False
     start_helper_server: bool = True
 
@@ -79,11 +82,16 @@ def create_runtime(
     )
     auth = MicrosoftAuthService(resolved_config, resolved_http_client)
     graph = MicrosoftGraphClient(auth, resolved_http_client)
+    audit_logger = LocalAuditLogger(
+        enabled=resolved_config.auditLogEnabled,
+        file_path=resolved_config.auditLogFile,
+    )
     return RuntimeServices(
         config=resolved_config,
         microsoft_auth=auth,
         graph=graph,
         http_client=resolved_http_client,
+        audit_logger=audit_logger,
         owns_http_client=http_client is None,
         start_helper_server=start_helper_server,
     )
@@ -101,6 +109,71 @@ class _RuntimeProvider:
 
     def reset(self) -> None:
         self._runtime = None
+
+
+def _get_audit_logger(runtime: RuntimeServices) -> LocalAuditLogger:
+    if runtime.audit_logger is None:
+        runtime.audit_logger = LocalAuditLogger(
+            enabled=runtime.config.auditLogEnabled,
+            file_path=runtime.config.auditLogFile,
+        )
+    return runtime.audit_logger
+
+
+class _AuditedFastMCP(FastMCP):
+    def __init__(
+        self,
+        *args: object,
+        runtime_provider: _RuntimeProvider,
+        **kwargs: object,
+    ) -> None:
+        self._audit_runtime_provider = runtime_provider
+        super().__init__(*args, **kwargs)
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
+        try:
+            result = await super().call_tool(name, arguments)
+        except Exception as error:
+            await self._record_audit_event(
+                tool_name=name,
+                arguments=arguments,
+                outcome="error",
+                error=error,
+            )
+            raise
+
+        await self._record_audit_event(
+            tool_name=name,
+            arguments=arguments,
+            outcome="success",
+        )
+        return result
+
+    async def _record_audit_event(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        outcome: str,
+        error: BaseException | None = None,
+    ) -> None:
+        try:
+            runtime = self._audit_runtime_provider.get()
+            await _get_audit_logger(runtime).record_tool_call(
+                tool_name=tool_name,
+                arguments=arguments,
+                outcome=outcome,
+                error=error,
+            )
+        except Exception as audit_error:
+            print(
+                f"Claude M365 MCP audit logging failed: {audit_error}",
+                file=sys.stderr,
+            )
 
 
 class _HelperServerRunner:
@@ -213,7 +286,11 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
                     await runtime.http_client.aclose()
                 runtime_provider.reset()
 
-    mcp = FastMCP("claude-m365-mcp", lifespan=lifespan)
+    mcp = _AuditedFastMCP(
+        "claude-m365-mcp",
+        lifespan=lifespan,
+        runtime_provider=runtime_provider,
+    )
 
     @mcp.resource(
         "m365://capabilities",
