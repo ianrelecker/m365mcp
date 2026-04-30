@@ -46,6 +46,18 @@ def _parse_url(value: str, *, name: str) -> str:
     return value
 
 
+def _parse_bool(value: str | None, *, default: bool, name: str) -> bool:
+    if value is None or value == "":
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
 @dataclass(frozen=True)
 class MicrosoftConfig:
     tenantId: str
@@ -63,6 +75,8 @@ class AppConfig:
     encryptionKey: bytes
     knownMailboxes: list[str]
     tokenFile: Path
+    auditLogEnabled: bool = True
+    auditLogFile: Path = Path(".audit/m365-mcp-audit.jsonl")
 
 
 def build_config_from_env(env: Mapping[str, str] | None = None) -> AppConfig:
@@ -98,6 +112,14 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AppConfig:
         encryptionKey=_parse_encryption_key(source, "TOKEN_ENCRYPTION_KEY"),
         knownMailboxes=_optional_comma_list(source.get("KNOWN_MAILBOXES")),
         tokenFile=Path(".tokens/microsoft-graph-token.json"),
+        auditLogEnabled=_parse_bool(
+            source.get("M365_AUDIT_LOG_ENABLED"),
+            default=True,
+            name="M365_AUDIT_LOG_ENABLED",
+        ),
+        auditLogFile=Path(
+            source.get("M365_AUDIT_LOG_FILE", ".audit/m365-mcp-audit.jsonl")
+        ),
     )
 
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import secrets
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +15,21 @@ import httpx
 from .config import AppConfig
 from .models import AccountInfo, MicrosoftConnectionStatus, StoredMicrosoftTokens
 from .token_store import EncryptedFileStore
+
+
+@dataclass
+class PendingAuthorization:
+    state: str
+    codeVerifier: str
+
+
+def _generate_code_verifier() -> str:
+    return secrets.token_urlsafe(64)[:128]
+
+
+def _code_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def decode_id_claims(id_token: str | None) -> dict[str, Any] | None:
@@ -44,7 +62,7 @@ class MicrosoftAuthService:
         self._config = config
         self._token_store = EncryptedFileStore(config.tokenFile, config.encryptionKey)
         self._http_client = http_client
-        self._pending_state: str | None = None
+        self._pending_authorization: PendingAuthorization | None = None
 
     @asynccontextmanager
     async def _client(self) -> Any:
@@ -57,7 +75,11 @@ class MicrosoftAuthService:
 
     def build_authorization_url(self) -> str:
         state = str(uuid4())
-        self._pending_state = state
+        code_verifier = _generate_code_verifier()
+        self._pending_authorization = PendingAuthorization(
+            state=state,
+            codeVerifier=code_verifier,
+        )
 
         request = httpx.URL(
             f"https://login.microsoftonline.com/{self._config.microsoft.tenantId}/oauth2/v2.0/authorize"
@@ -69,6 +91,8 @@ class MicrosoftAuthService:
             .copy_add_param("response_mode", "query")
             .copy_add_param("scope", " ".join(self._config.microsoft.scopes))
             .copy_add_param("state", state)
+            .copy_add_param("code_challenge", _code_challenge(code_verifier))
+            .copy_add_param("code_challenge_method", "S256")
         )
 
     async def handle_authorization_code_callback(
@@ -87,10 +111,14 @@ class MicrosoftAuthService:
         if not code or not state:
             raise RuntimeError("Microsoft callback is missing the code or state parameter")
 
-        if not self._pending_state or state != self._pending_state:
+        if (
+            not self._pending_authorization
+            or state != self._pending_authorization.state
+        ):
             raise RuntimeError("Microsoft callback state was invalid")
 
-        self._pending_state = None
+        code_verifier = self._pending_authorization.codeVerifier
+        self._pending_authorization = None
 
         token_response = await self._fetch_token(
             {
@@ -98,6 +126,7 @@ class MicrosoftAuthService:
                 "code": code,
                 "redirect_uri": self._config.microsoft.redirectUri,
                 "scope": " ".join(self._config.microsoft.scopes),
+                "code_verifier": code_verifier,
             }
         )
 
