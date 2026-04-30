@@ -114,6 +114,8 @@ python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
 
 Use [claude_desktop_config.json](claude_desktop_config.json) as the starting point. It keeps Claude's default `preferences` block and adds the `m365` MCP server.
 
+If you are adding this server inside Codex instead of Claude Desktop, use [CODEX_MCP_SETUP.md](CODEX_MCP_SETUP.md). Codex has separate fields for command and arguments, so the setup is a little different.
+
 Replace this example path:
 
 ```text
