@@ -20,16 +20,22 @@ Claude can also read [M365_MCP_CAPABILITIES.md](M365_MCP_CAPABILITIES.md) throug
 
 ## Setup Checklist
 
-You need four things:
+You need four things on the computer running Claude Desktop:
 
-- `uv` installed on the computer running Claude Desktop.
+- Node.js 20 or newer, which provides `npx`.
+- `uv`, which the npm launcher uses to run the Python MCP server.
 - A Microsoft Entra app registration.
-- A local `.env` file with your Microsoft app values.
-- A Claude Desktop config entry for this MCP server.
+- A Claude Desktop config entry with your Microsoft app values.
 
-## 1. Install uv
+## 1. Install Node.js And uv
 
-`uv` is the Python runner Claude will use to start this MCP server.
+Install Node.js 20 or newer from [nodejs.org](https://nodejs.org/), then verify `npx` is available:
+
+```bash
+npx --version
+```
+
+Install `uv` next. `uv` is the Python runner used behind the npm package.
 
 macOS or Linux:
 
@@ -49,7 +55,7 @@ Close and reopen your terminal, then check that it installed:
 uv --version
 ```
 
-If Claude Desktop later cannot find `uv`, use the full path to `uv` in `claude_desktop_config.json`. On Windows, run:
+If Claude Desktop later cannot find `uv`, set `UV_PATH` in `claude_desktop_config.json`. On Windows, run:
 
 ```powershell
 where uv
@@ -84,11 +90,9 @@ Add these delegated Microsoft Graph permissions:
 
 If your organization requires admin approval, click `Grant admin consent`.
 
-## 3. Create Your .env File
+## 3. Prepare Your Values
 
-Copy `.env.example` to `.env`, then fill in the values.
-
-Important fields:
+You will paste these values into the Claude Desktop MCP config:
 
 - `MICROSOFT_TENANT_ID`: the Azure tenant/directory ID.
 - `MICROSOFT_CLIENT_ID`: the Azure app/client ID.
@@ -135,23 +139,28 @@ The config should look like this:
   },
   "mcpServers": {
     "m365": {
-      "command": "uv",
+      "command": "npx",
       "args": [
-        "--directory",
-        "C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp",
-        "run",
-        "--env-file",
-        ".env",
-        "mcp",
-        "run",
-        "src/m365_mcp/server.py"
-      ]
+        "-y",
+        "@ianrelecker/m365mcp"
+      ],
+      "env": {
+        "PORT": "8787",
+        "LOCAL_BASE_URL": "http://localhost:8787",
+        "MICROSOFT_TENANT_ID": "your-tenant-id",
+        "MICROSOFT_CLIENT_ID": "your-client-id",
+        "MICROSOFT_CLIENT_SECRET": "your-client-secret-value",
+        "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
+        "KNOWN_MAILBOXES": "shared@company.com"
+      }
     }
   }
 }
 ```
 
-Keep Microsoft secrets in `.env`. Do not paste tenant IDs, client secrets, or token keys directly into Claude's config.
+The npm launcher stores runtime state under `~/.m365mcp` by default, including `.tokens/microsoft-graph-token.json`. Set `M365_MCP_HOME` in `env` if you want a different local state folder.
+
+If Claude cannot find `uv`, add `UV_PATH` to `env` with the full path from `where uv` on Windows or `which uv` on macOS/Linux.
 
 After saving the config, fully quit and reopen Claude Desktop.
 
@@ -159,13 +168,7 @@ After saving the config, fully quit and reopen Claude Desktop.
 
 Do not run the MCP server manually for normal use. Let Claude Desktop start it.
 
-After Claude Desktop reopens, the local auth site should be available here:
-
-```text
-http://localhost:8787/
-```
-
-If that page is not available yet, open a Claude chat and ask:
+After Claude Desktop reopens, open a Claude chat and ask:
 
 ```text
 Check my Microsoft auth status with the m365 MCP server.
@@ -173,13 +176,19 @@ Check my Microsoft auth status with the m365 MCP server.
 
 Claude should start the MCP server and call `auth_status`. The result includes the Microsoft connect URL.
 
+The local auth site should then be available here:
+
+```text
+http://localhost:8787/
+```
+
 To sign in directly, open:
 
 ```text
 http://localhost:8787/auth/microsoft/start
 ```
 
-Sign in with the Microsoft 365 account Claude should use. After sign-in, tokens are stored locally at `.tokens/microsoft-graph-token.json`, encrypted with `TOKEN_ENCRYPTION_KEY`.
+Sign in with the Microsoft 365 account Claude should use. After sign-in, tokens are stored locally under `~/.m365mcp/.tokens/microsoft-graph-token.json`, encrypted with `TOKEN_ENCRYPTION_KEY`.
 
 If Claude says it is not authenticated, or `auth_status` shows missing scopes, open the same local auth link again and reconnect:
 
@@ -188,6 +197,8 @@ http://localhost:8787/auth/microsoft/start
 ```
 
 If `http://localhost:8787/` does not load, Claude probably did not start the MCP server. Open Claude Desktop settings, find the `m365` MCP server, click `View Logs`, and check the troubleshooting section below.
+
+For a terminal-driven auth helper, run `m365mcp auth` after installing globally, or run `npx -y @ianrelecker/m365mcp auth`. The same Microsoft environment variables must be available in that terminal.
 
 ## Everyday Use
 
@@ -214,11 +225,12 @@ If Claude shows `Server disconnected`, click `View Logs`.
 
 Common fixes:
 
-- If the logs say `TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key`, regenerate `TOKEN_ENCRYPTION_KEY` and update `.env`.
-- If the MCP details still show placeholder values like `MICROSOFT_TENANT_ID=your-tenant-id`, remove any old environment-variable block from Claude's config and use `--env-file .env`.
+- If the logs say `TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key`, regenerate `TOKEN_ENCRYPTION_KEY` and update Claude's MCP `env` block.
+- If the MCP details still show placeholder values like `MICROSOFT_TENANT_ID=your-tenant-id`, replace the placeholders in Claude's config and fully restart Claude Desktop.
 - If the logs include `WinError 10048` or say the port is already in use, something else is using port `8787`. Stop the other process, then restart Claude Desktop.
 - If the local auth page does not open, make sure Claude Desktop is running and the `m365` MCP server is enabled.
-- If Claude cannot find `uv`, replace `"command": "uv"` with the full path from `where uv` on Windows or `which uv` on macOS/Linux.
+- If Claude cannot find `npx`, install Node.js 20 or newer.
+- If Claude cannot find `uv`, add `UV_PATH` to the MCP `env` block with the full path from `where uv` on Windows or `which uv` on macOS/Linux.
 - If Microsoft sign-in fails, confirm the Azure redirect URI exactly matches `http://localhost:8787/auth/microsoft/callback`.
 - If `auth_status` reports `missingScopes`, add the missing permissions in Azure, grant consent if needed, then reconnect Microsoft.
 
@@ -245,6 +257,19 @@ uv run mcp run src/m365_mcp/server.py
 ```
 
 Stop the manual smoke test before opening Claude Desktop. Two copies cannot both use the same localhost helper port.
+
+Package smoke tests:
+
+```bash
+npm run check
+npm pack --dry-run
+```
+
+Local npm launcher test:
+
+```bash
+node bin/m365mcp.js --help
+```
 
 ## Tool Reference
 
