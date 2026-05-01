@@ -24,6 +24,7 @@ from .models import (
     CalendarListEventsResult,
     CalendarUpdateEventResult,
     CalendarWindow,
+    ContactAddress,
     ContactFoldersResult,
     ContactFolderInfo,
     ContactGetResult,
@@ -83,7 +84,8 @@ MAIL_FOLDER_SELECT = (
 )
 CONTACT_SELECT = (
     "id,displayName,givenName,surname,companyName,jobTitle,"
-    "businessPhones,mobilePhone,emailAddresses"
+    "businessPhones,mobilePhone,emailAddresses,categories,"
+    "businessAddress,homeAddress,otherAddress,parentFolderId"
 )
 CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount"
 MESSAGE_RULE_SELECT = (
@@ -1193,6 +1195,10 @@ class MicrosoftGraphClient:
         jobTitle: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
+        categories: list[str] | None = None,
+        businessAddress: ContactAddress | dict[str, Any] | None = None,
+        homeAddress: ContactAddress | dict[str, Any] | None = None,
+        otherAddress: ContactAddress | dict[str, Any] | None = None,
     ) -> ContactMutationResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         contact = await self._request(
@@ -1207,6 +1213,10 @@ class MicrosoftGraphClient:
                 jobTitle=jobTitle,
                 businessPhones=businessPhones,
                 mobilePhone=mobilePhone,
+                categories=categories,
+                businessAddress=businessAddress,
+                homeAddress=homeAddress,
+                otherAddress=otherAddress,
             ),
         )
         return ContactMutationResult(
@@ -1228,6 +1238,10 @@ class MicrosoftGraphClient:
         jobTitle: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
+        categories: list[str] | None = None,
+        businessAddress: ContactAddress | dict[str, Any] | None = None,
+        homeAddress: ContactAddress | dict[str, Any] | None = None,
+        otherAddress: ContactAddress | dict[str, Any] | None = None,
     ) -> ContactMutationResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         contact = await self._request(
@@ -1242,6 +1256,10 @@ class MicrosoftGraphClient:
                 jobTitle=jobTitle,
                 businessPhones=businessPhones,
                 mobilePhone=mobilePhone,
+                categories=categories,
+                businessAddress=businessAddress,
+                homeAddress=homeAddress,
+                otherAddress=otherAddress,
             ),
         )
         return ContactMutationResult(
@@ -1265,6 +1283,82 @@ class MicrosoftGraphClient:
             mailbox=normalized_mailbox or "me",
             contactId=contactId,
             deleted=True,
+        )
+
+    async def set_contact_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        contactId: str,
+        categories: list[str],
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        return await self.update_contact(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            categories=categories,
+        )
+
+    async def add_contact_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        contactId: str,
+        categories: list[str],
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        current = await self.get_contact(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+        )
+        existing = list(current.contact.categories)
+        for category in categories:
+            if category not in existing:
+                existing.append(category)
+        return await self.set_contact_categories(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            categories=existing,
+        )
+
+    async def remove_contact_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        contactId: str,
+        categories: list[str],
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        current = await self.get_contact(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+        )
+        remove = set(categories)
+        return await self.set_contact_categories(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            categories=[
+                category for category in current.contact.categories if category not in remove
+            ],
+        )
+
+    async def clear_contact_categories(
+        self,
+        *,
+        mailbox: str | None = None,
+        contactId: str,
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        return await self.set_contact_categories(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            categories=[],
         )
 
     async def list_contact_folders(
@@ -1831,6 +1925,10 @@ class MicrosoftGraphClient:
         jobTitle: str | None,
         businessPhones: list[str] | None,
         mobilePhone: str | None,
+        categories: list[str] | None,
+        businessAddress: ContactAddress | dict[str, Any] | None,
+        homeAddress: ContactAddress | dict[str, Any] | None,
+        otherAddress: ContactAddress | dict[str, Any] | None,
     ) -> dict[str, Any]:
         return {
             "displayName": displayName,
@@ -1847,6 +1945,26 @@ class MicrosoftGraphClient:
             ]
             if emailAddresses is not None
             else None,
+            "categories": categories,
+            "businessAddress": self._contact_address_payload(businessAddress),
+            "homeAddress": self._contact_address_payload(homeAddress),
+            "otherAddress": self._contact_address_payload(otherAddress),
+        }
+
+    def _contact_address_payload(
+        self,
+        address: ContactAddress | dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if address is None:
+            return None
+        if isinstance(address, ContactAddress):
+            return address.model_dump(mode="json")
+        return {
+            "street": address.get("street"),
+            "city": address.get("city"),
+            "state": address.get("state"),
+            "countryOrRegion": address.get("countryOrRegion"),
+            "postalCode": address.get("postalCode"),
         }
 
     def _contact_matches_query(self, contact: ContactInfo, query: str) -> bool:
@@ -1860,8 +1978,27 @@ class MicrosoftGraphClient:
             contact.mobilePhone,
             *contact.businessPhones,
             *contact.emailAddresses,
+            *contact.categories,
+            *self._contact_address_values(contact.businessAddress),
+            *self._contact_address_values(contact.homeAddress),
+            *self._contact_address_values(contact.otherAddress),
         ]
         return any(needle in value.lower() for value in haystack if value)
+
+    def _contact_address_values(self, address: ContactAddress | None) -> list[str]:
+        if address is None:
+            return []
+        return [
+            value
+            for value in [
+                address.street,
+                address.city,
+                address.state,
+                address.countryOrRegion,
+                address.postalCode,
+            ]
+            if value
+        ]
 
     def _attachment_unsupported_reason(
         self,
@@ -1999,6 +2136,28 @@ class MicrosoftGraphClient:
             childFolderCount=int(folder.get("childFolderCount") or 0),
         )
 
+    def _map_contact_address(self, address: Any) -> ContactAddress | None:
+        if not isinstance(address, dict):
+            return None
+        mapped = ContactAddress(
+            street=self._nullable_string(address.get("street")),
+            city=self._nullable_string(address.get("city")),
+            state=self._nullable_string(address.get("state")),
+            countryOrRegion=self._nullable_string(address.get("countryOrRegion")),
+            postalCode=self._nullable_string(address.get("postalCode")),
+        )
+        if not any(
+            [
+                mapped.street,
+                mapped.city,
+                mapped.state,
+                mapped.countryOrRegion,
+                mapped.postalCode,
+            ]
+        ):
+            return None
+        return mapped
+
     def _map_contact(self, contact: dict[str, Any]) -> ContactInfo:
         return ContactInfo(
             id=str(contact["id"]),
@@ -2021,6 +2180,15 @@ class MicrosoftGraphClient:
                 ]
                 if address
             ],
+            categories=[
+                str(category)
+                for category in (contact.get("categories") or [])
+                if category
+            ],
+            businessAddress=self._map_contact_address(contact.get("businessAddress")),
+            homeAddress=self._map_contact_address(contact.get("homeAddress")),
+            otherAddress=self._map_contact_address(contact.get("otherAddress")),
+            parentFolderId=self._nullable_string(contact.get("parentFolderId")),
         )
 
     def _map_message_summary(self, message: dict[str, Any]) -> MessageSummary:
