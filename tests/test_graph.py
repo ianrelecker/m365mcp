@@ -817,6 +817,7 @@ async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.anyio
 async def test_contacts_crud_search_and_folders() -> None:
     requests: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
+    contact_categories = ["Client"]
 
     def contact(contact_id: str = "contact-1", name: str = "Ada Lovelace") -> dict[str, object]:
         return {
@@ -829,6 +830,23 @@ async def test_contacts_crud_search_and_folders() -> None:
             "businessPhones": ["555-0100"],
             "mobilePhone": "555-0101",
             "emailAddresses": [{"address": "ada@example.com", "name": name}],
+            "categories": contact_categories,
+            "parentFolderId": "contacts-folder",
+            "businessAddress": {
+                "street": "1 Analytical Way",
+                "city": "London",
+                "state": "",
+                "countryOrRegion": "UK",
+                "postalCode": "NW1",
+            },
+            "homeAddress": {},
+            "otherAddress": {
+                "street": "PO Box 1",
+                "city": "Seattle",
+                "state": "WA",
+                "countryOrRegion": "US",
+                "postalCode": "98101",
+            },
         }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -850,6 +868,8 @@ async def test_contacts_crud_search_and_folders() -> None:
             )
 
         if request.url.path.endswith("/contacts") and request.method == "GET":
+            assert "categories" in request.url.params["$select"]
+            assert "businessAddress" in request.url.params["$select"]
             if "$filter" in request.url.params:
                 assert "emailAddresses/any" in request.url.params["$filter"]
             return httpx.Response(200, json={"value": [contact()]})
@@ -861,10 +881,22 @@ async def test_contacts_crud_search_and_folders() -> None:
             assert body["emailAddresses"] == [
                 {"address": "ada@example.com", "name": "Ada Lovelace"}
             ]
+            assert body["categories"] == ["Client", "VIP"]
+            assert body["businessAddress"] == {
+                "street": "1 Analytical Way",
+                "city": "London",
+                "countryOrRegion": "UK",
+                "postalCode": "NW1",
+            }
             return httpx.Response(201, json=contact("contact-new"))
 
         if request.url.path.endswith("/contacts/contact-1") and request.method == "PATCH":
-            return httpx.Response(200, json=contact("contact-1", body["displayName"]))
+            if "categories" in body:
+                contact_categories[:] = body["categories"]
+            return httpx.Response(
+                200,
+                json=contact("contact-1", body.get("displayName", "Ada Lovelace")),
+            )
 
         if request.url.path.endswith("/contacts/contact-1") and request.method == "DELETE":
             return httpx.Response(204)
@@ -879,6 +911,11 @@ async def test_contacts_crud_search_and_folders() -> None:
 
     listed = await graph.list_contacts(mailbox="shared@example.com")
     assert listed.contacts[0].emailAddresses == ["ada@example.com"]
+    assert listed.contacts[0].categories == ["Client"]
+    assert listed.contacts[0].parentFolderId == "contacts-folder"
+    assert listed.contacts[0].businessAddress.city == "London"
+    assert listed.contacts[0].homeAddress is None
+    assert listed.contacts[0].otherAddress.state == "WA"
 
     searched = await graph.search_contacts(
         mailbox="shared@example.com",
@@ -896,6 +933,14 @@ async def test_contacts_crud_search_and_folders() -> None:
         mailbox="shared@example.com",
         displayName="Ada Lovelace",
         emailAddresses=["ada@example.com"],
+        categories=["Client", "VIP"],
+        businessAddress={
+            "street": "1 Analytical Way",
+            "city": "London",
+            "state": None,
+            "countryOrRegion": "UK",
+            "postalCode": "NW1",
+        },
     )
     assert created.contact.id == "contact-new"
 
@@ -903,16 +948,51 @@ async def test_contacts_crud_search_and_folders() -> None:
         mailbox="shared@example.com",
         contactId="contact-1",
         displayName="Ada Byron",
+        homeAddress={"city": "Oxford", "countryOrRegion": "UK"},
+        otherAddress={"street": "PO Box 1", "city": "Seattle"},
     )
     assert updated.contact.displayName == "Ada Byron"
+
+    categorized = await graph.set_contact_categories(
+        mailbox="shared@example.com",
+        contactId="contact-1",
+        categories=["Client", "VIP"],
+    )
+    assert categorized.contact.categories == ["Client", "VIP"]
+
+    added = await graph.add_contact_categories(
+        mailbox="shared@example.com",
+        contactId="contact-1",
+        categories=["Prospect", "Client"],
+    )
+    assert added.contact.categories == ["Client", "VIP", "Prospect"]
+
+    removed = await graph.remove_contact_categories(
+        mailbox="shared@example.com",
+        contactId="contact-1",
+        categories=["VIP"],
+    )
+    assert removed.contact.categories == ["Client", "Prospect"]
+
+    cleared = await graph.clear_contact_categories(
+        mailbox="shared@example.com",
+        contactId="contact-1",
+    )
+    assert cleared.contact.categories == []
 
     deleted = await graph.delete_contact(
         mailbox="shared@example.com",
         contactId="contact-1",
+        folderId="contacts-folder",
     )
     assert deleted.deleted is True
 
     assert any("/users/shared@example.com/" in path for _, path, _, _ in requests)
+    assert any(
+        path.endswith("/contactFolders/contacts-folder/contacts/contact-1")
+        and method == "DELETE"
+        for method, path, _, _ in requests
+    )
 
     await client.aclose()
 

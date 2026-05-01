@@ -271,6 +271,14 @@ class ContactFolderInfo(AppModel):
     childFolderCount: int = 0
 
 
+class ContactAddress(AppModel):
+    street: str | None = None
+    city: str | None = None
+    state: str | None = None
+    countryOrRegion: str | None = None
+    postalCode: str | None = None
+
+
 class ContactInfo(AppModel):
     id: str
     displayName: str | None = None
@@ -281,6 +289,11 @@ class ContactInfo(AppModel):
     businessPhones: list[str] = Field(default_factory=list)
     mobilePhone: str | None = None
     emailAddresses: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    businessAddress: ContactAddress | None = None
+    homeAddress: ContactAddress | None = None
+    otherAddress: ContactAddress | None = None
+    parentFolderId: str | None = None
 
 
 class ContactsListResult(AppModel):

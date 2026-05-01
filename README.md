@@ -294,11 +294,24 @@ Contacts and calendar:
 - `contacts_create`
 - `contacts_update`
 - `contacts_delete`
+- `contacts_set_categories`
+- `contacts_add_categories`
+- `contacts_remove_categories`
+- `contacts_clear_categories`
 - `contacts_list_folders`
 - `calendar_list_events`
 - `calendar_create_event`
 - `calendar_update_event`
 - `calendar_delete_event`
+
+## Contacts
+
+- Use `contacts_search` to resolve recipients before drafting mail.
+- Use `contacts_list_folders` when contacts are organized in folders.
+- Contact tools can create, update, and delete Outlook contacts in mailboxes the signed-in user can access.
+- Contacts include category names, parent folder IDs, and structured business/home/other addresses.
+- Use `contacts_set_categories`, `contacts_add_categories`, `contacts_remove_categories`, and `contacts_clear_categories` to manage contact categories. These use the same Outlook master categories as mail.
+- Use `contacts_update` with `businessAddress`, `homeAddress`, or `otherAddress` objects for street, city, state, country or region, and postal code changes.
 
 ## Security Notes
 
