@@ -1,0 +1,16 @@
+src/
+.env
+.env.*
+.tokens/
+.venv/
+node_modules/
+.github/
+tests/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+*.log
+*.tgz
+*.pyc
+**/*.pyc
+.DS_Store
