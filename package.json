@@ -1,0 +1,48 @@
+{
+  "name": "@ianrelecker/m365mcp",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Local MCP server for Microsoft 365 delegated Graph access.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ianrelecker/m365mcp.git"
+  },
+  "homepage": "https://github.com/ianrelecker/m365mcp#readme",
+  "bugs": {
+    "url": "https://github.com/ianrelecker/m365mcp/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "m365mcp": "./bin/m365mcp.js"
+  },
+  "files": [
+    "bin",
+    "src/m365_mcp/*.py",
+    "pyproject.toml",
+    "uv.lock",
+    "README.md",
+    "LICENSE",
+    ".env.example",
+    "M365_MCP_CAPABILITIES.md",
+    "claude_desktop_config.json"
+  ],
+  "scripts": {
+    "check": "node --check bin/m365mcp.js",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepack": "npm run check",
+    "start": "node bin/m365mcp.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "microsoft-365",
+    "microsoft-graph",
+    "claude",
+    "outlook",
+    "calendar"
+  ]
+}

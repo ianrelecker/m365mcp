@@ -1,6 +1,8 @@
 import contextlib
+import json
 import socket
 import sys
+import webbrowser
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -1208,8 +1210,90 @@ mcp = create_default_server()
 app = mcp
 
 
+async def _close_runtime(runtime: RuntimeServices) -> None:
+    if runtime.owns_http_client:
+        await runtime.http_client.aclose()
+
+
+async def _run_auth_helper() -> None:
+    runtime = create_runtime(start_helper_server=False)
+    auth_url = urljoin(runtime.config.localBaseUrl, "/auth/microsoft/start")
+
+    if not _can_bind_localhost(runtime.config.port):
+        print(
+            f"localhost:{runtime.config.port} is already in use. "
+            "If the M365 MCP helper is already running, opening the auth URL.",
+            file=sys.stderr,
+        )
+        webbrowser.open(auth_url)
+        await _close_runtime(runtime)
+        return
+
+    helper_runner = _HelperServerRunner(runtime)
+    print(f"Starting M365 MCP auth helper at {runtime.config.localBaseUrl}")
+    print(f"Opening Microsoft sign-in: {auth_url}")
+    print("Press Ctrl+C after sign-in completes.")
+
+    try:
+        async with anyio.create_task_group() as task_group:
+            await task_group.start(helper_runner.run)
+            webbrowser.open(auth_url)
+            await anyio.sleep_forever()
+    finally:
+        await helper_runner.stop()
+        await _close_runtime(runtime)
+
+
+async def _print_status() -> None:
+    runtime = create_runtime(start_helper_server=False)
+    try:
+        status = await runtime.microsoft_auth.get_status()
+        print(json.dumps(status.model_dump(mode="json"), indent=2))
+    finally:
+        await _close_runtime(runtime)
+
+
+async def _logout() -> None:
+    runtime = create_runtime(start_helper_server=False)
+    try:
+        await runtime.microsoft_auth.disconnect()
+        print("Disconnected Microsoft 365 and cleared the local token cache.")
+    finally:
+        await _close_runtime(runtime)
+
+
+def _print_cli_help() -> None:
+    print(
+        """M365 MCP
+
+Usage:
+  m365-mcp              Run the MCP stdio server
+  m365-mcp auth         Start the local auth helper and open Microsoft sign-in
+  m365-mcp status       Print Microsoft connection status as JSON
+  m365-mcp logout       Clear the local Microsoft token cache
+"""
+    )
+
+
 def main() -> None:
-    mcp.run()
+    args = sys.argv[1:]
+    if not args:
+        mcp.run()
+        return
+
+    command = args[0]
+    if command in {"--help", "-h", "help"}:
+        _print_cli_help()
+    elif command == "auth":
+        anyio.run(_run_auth_helper)
+    elif command == "status":
+        anyio.run(_print_status)
+    elif command in {"logout", "disconnect"}:
+        anyio.run(_logout)
+    else:
+        print(f"Unknown command: {command}", file=sys.stderr)
+        _print_cli_help()
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
