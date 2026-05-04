@@ -242,7 +242,7 @@ You do not need these commands for normal Claude Desktop use.
 Install dependencies:
 
 ```bash
-uv sync
+uv sync --extra dev
 ```
 
 Run tests:
