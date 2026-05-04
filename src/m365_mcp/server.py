@@ -23,6 +23,7 @@ from m365_mcp.models import (
     CalendarDeleteEventResult,
     CalendarListEventsResult,
     CalendarUpdateEventResult,
+    ContactAddress,
     ContactFoldersResult,
     ContactGetResult,
     ContactMutationResult,
@@ -1009,7 +1010,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
 
     @mcp.tool(
         name="contacts_create",
-        description="Create an Outlook contact.",
+        description="Create an Outlook contact with optional categories and addresses.",
     )
     async def contacts_create(
         mailbox: str | None = None,
@@ -1022,6 +1023,10 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         jobTitle: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
+        categories: list[str] | None = None,
+        businessAddress: ContactAddress | None = None,
+        homeAddress: ContactAddress | None = None,
+        otherAddress: ContactAddress | None = None,
     ) -> ContactMutationResult:
         runtime = runtime_provider.get()
         return await runtime.graph.create_contact(
@@ -1035,11 +1040,18 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             jobTitle=jobTitle,
             businessPhones=businessPhones,
             mobilePhone=mobilePhone,
+            categories=categories,
+            businessAddress=businessAddress,
+            homeAddress=homeAddress,
+            otherAddress=otherAddress,
         )
 
     @mcp.tool(
         name="contacts_update",
-        description="Update an Outlook contact.",
+        description=(
+            "Update an Outlook contact by ID, including names, phones, email "
+            "addresses, categories, and physical addresses."
+        ),
     )
     async def contacts_update(
         contactId: str,
@@ -1053,6 +1065,10 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         jobTitle: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
+        categories: list[str] | None = None,
+        businessAddress: ContactAddress | None = None,
+        homeAddress: ContactAddress | None = None,
+        otherAddress: ContactAddress | None = None,
     ) -> ContactMutationResult:
         runtime = runtime_provider.get()
         return await runtime.graph.update_contact(
@@ -1067,6 +1083,10 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             jobTitle=jobTitle,
             businessPhones=businessPhones,
             mobilePhone=mobilePhone,
+            categories=categories,
+            businessAddress=businessAddress,
+            homeAddress=homeAddress,
+            otherAddress=otherAddress,
         )
 
     @mcp.tool(
@@ -1080,6 +1100,76 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     ) -> ContactMutationResult:
         runtime = runtime_provider.get()
         return await runtime.graph.delete_contact(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+        )
+
+    @mcp.tool(
+        name="contacts_set_categories",
+        description="Replace all categories on an Outlook contact.",
+    )
+    async def contacts_set_categories(
+        contactId: str,
+        categories: list[str],
+        mailbox: str | None = None,
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.set_contact_categories(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            categories=categories,
+        )
+
+    @mcp.tool(
+        name="contacts_add_categories",
+        description="Add categories to an Outlook contact without removing existing categories.",
+    )
+    async def contacts_add_categories(
+        contactId: str,
+        categories: list[str],
+        mailbox: str | None = None,
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.add_contact_categories(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            categories=categories,
+        )
+
+    @mcp.tool(
+        name="contacts_remove_categories",
+        description="Remove selected categories from an Outlook contact.",
+    )
+    async def contacts_remove_categories(
+        contactId: str,
+        categories: list[str],
+        mailbox: str | None = None,
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.remove_contact_categories(
+            mailbox=mailbox,
+            contactId=contactId,
+            folderId=folderId,
+            categories=categories,
+        )
+
+    @mcp.tool(
+        name="contacts_clear_categories",
+        description="Remove all categories from an Outlook contact.",
+    )
+    async def contacts_clear_categories(
+        contactId: str,
+        mailbox: str | None = None,
+        folderId: str | None = None,
+    ) -> ContactMutationResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.clear_contact_categories(
             mailbox=mailbox,
             contactId=contactId,
             folderId=folderId,

@@ -150,12 +150,21 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "contacts_create",
             "contacts_update",
             "contacts_delete",
+            "contacts_set_categories",
+            "contacts_add_categories",
+            "contacts_remove_categories",
+            "contacts_clear_categories",
             "contacts_list_folders",
             "calendar_list_events",
             "calendar_create_event",
             "calendar_update_event",
             "calendar_delete_event",
         }
+        tool_by_name = {tool.name: tool for tool in tools.tools}
+        contact_create_schema = tool_by_name["contacts_create"].inputSchema
+        assert "categories" in contact_create_schema["properties"]
+        assert "businessAddress" in contact_create_schema["properties"]
+        assert "countryOrRegion" in str(contact_create_schema)
 
         resources = await session.list_resources()
         assert {str(resource.uri) for resource in resources.resources} == {
@@ -164,6 +173,9 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
 
         capabilities = await session.call_tool("m365_capabilities", {})
         assert "M365 MCP Capabilities" in capabilities.structuredContent["content"]
+        assert (
+            "contacts_set_categories" in capabilities.structuredContent["content"]
+        )
 
         resource = await session.read_resource("m365://capabilities")
         assert "M365 MCP Capabilities" in resource.contents[0].text
