@@ -25,7 +25,8 @@ You need four things on the computer running Claude Desktop:
 - Node.js 20 or newer, which provides `npx`.
 - `uv`, which the npm launcher uses to run the Python MCP server.
 - A Microsoft Entra app registration.
-- A Claude Desktop config entry with your Microsoft app values.
+- A local `~/.m365mcp/.env` file with your Microsoft app values.
+- A small Claude Desktop config entry.
 
 ## 1. Install Node.js And uv
 
@@ -90,19 +91,26 @@ Add these delegated Microsoft Graph permissions:
 
 If your organization requires admin approval, click `Grant admin consent`.
 
-## 3. Prepare Your Values
+## 3. Create The Local M365 Config
 
-You will paste these values into the Claude Desktop MCP config:
+Run the setup helper:
+
+```bash
+npx -y @ianrelecker/m365mcp init
+```
+
+This creates `~/.m365mcp/.env`, generates a real `TOKEN_ENCRYPTION_KEY`, and prints the Claude Desktop config entry to use.
+
+Open `~/.m365mcp/.env` and fill in these values:
 
 - `MICROSOFT_TENANT_ID`: the Azure tenant/directory ID.
 - `MICROSOFT_CLIENT_ID`: the Azure app/client ID.
 - `MICROSOFT_CLIENT_SECRET`: the client secret `Value`.
-- `TOKEN_ENCRYPTION_KEY`: a base64 32-byte key used to encrypt the local token cache.
 - `KNOWN_MAILBOXES`: optional comma-separated shared mailboxes, such as `shared@company.com`.
 - `M365_AUDIT_LOG_ENABLED`: optional. Defaults to `true`.
 - `M365_AUDIT_LOG_FILE`: optional. Defaults to `.audit/m365-mcp-audit.jsonl`.
 
-Generate `TOKEN_ENCRYPTION_KEY` with:
+If you ever need to manually generate a new `TOKEN_ENCRYPTION_KEY`, use:
 
 ```bash
 python3 -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
@@ -120,14 +128,6 @@ Use [claude_desktop_config.json](claude_desktop_config.json) as the starting poi
 
 If you are adding this server inside Codex instead of Claude Desktop, use [CODEX_MCP_SETUP.md](CODEX_MCP_SETUP.md). Codex has separate fields for command and arguments, so the setup is a little different.
 
-Replace this example path:
-
-```text
-C:\Users\YOUR_WINDOWS_USER\Documents\m365mcp
-```
-
-with the real full path to this repo on your computer.
-
 The config should look like this:
 
 ```json
@@ -143,22 +143,21 @@ The config should look like this:
       "args": [
         "-y",
         "@ianrelecker/m365mcp"
-      ],
-      "env": {
-        "PORT": "8787",
-        "LOCAL_BASE_URL": "http://localhost:8787",
-        "MICROSOFT_TENANT_ID": "your-tenant-id",
-        "MICROSOFT_CLIENT_ID": "your-client-id",
-        "MICROSOFT_CLIENT_SECRET": "your-client-secret-value",
-        "TOKEN_ENCRYPTION_KEY": "your-base64-32-byte-key",
-        "KNOWN_MAILBOXES": "shared@company.com"
-      }
+      ]
     }
   }
 }
 ```
 
-The npm launcher stores runtime state under `~/.m365mcp` by default, including `.tokens/microsoft-graph-token.json`. Set `M365_MCP_HOME` in `env` if you want a different local state folder.
+The npm launcher loads `~/.m365mcp/.env` automatically and stores runtime state under `~/.m365mcp`, including `.tokens/microsoft-graph-token.json`, `.audit/`, and `.venv/`.
+
+If you want a different local state folder, set `M365_MCP_HOME` in the MCP `env` block. If you want to keep the env file somewhere else, set `M365_MCP_ENV_FILE` or add `--env-file /full/path/to/.env` to the MCP `args`.
+
+To check the local runner setup before restarting Claude Desktop, run:
+
+```bash
+npx -y @ianrelecker/m365mcp doctor
+```
 
 If Claude cannot find `uv`, add `UV_PATH` to `env` with the full path from `where uv` on Windows or `which uv` on macOS/Linux.
 
@@ -225,8 +224,9 @@ If Claude shows `Server disconnected`, click `View Logs`.
 
 Common fixes:
 
-- If the logs say `TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key`, regenerate `TOKEN_ENCRYPTION_KEY` and update Claude's MCP `env` block.
-- If the MCP details still show placeholder values like `MICROSOFT_TENANT_ID=your-tenant-id`, replace the placeholders in Claude's config and fully restart Claude Desktop.
+- If the logs say `TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key`, regenerate `TOKEN_ENCRYPTION_KEY` and update `~/.m365mcp/.env`.
+- If the logs say `M365 MCP is not configured yet`, run `npx -y @ianrelecker/m365mcp init`, fill in `~/.m365mcp/.env`, then fully restart Claude Desktop.
+- If `doctor` shows placeholder values like `MICROSOFT_TENANT_ID=your-tenant-id`, replace the placeholders in `~/.m365mcp/.env`.
 - If the logs include `WinError 10048` or say the port is already in use, something else is using port `8787`. Stop the other process, then restart Claude Desktop.
 - If the local auth page does not open, make sure Claude Desktop is running and the `m365` MCP server is enabled.
 - If Claude cannot find `npx`, install Node.js 20 or newer.

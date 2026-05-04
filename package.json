@@ -25,6 +25,7 @@
     "pyproject.toml",
     "uv.lock",
     "README.md",
+    "CODEX_MCP_SETUP.md",
     "LICENSE",
     ".env.example",
     "M365_MCP_CAPABILITIES.md",

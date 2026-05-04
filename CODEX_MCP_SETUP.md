@@ -1,10 +1,36 @@
 # Codex MCP Setup
 
-Use this when adding this M365 MCP server in Codex with **Connect to a custom MCP**.
+Use this when adding this M365 MCP server with **Connect to a custom MCP**.
 
 The most important rule: **Command to launch is only the executable.** Do not paste the whole command into that field.
 
-## Windows
+## One-Time Setup
+
+Create the local env file first:
+
+```bash
+npx -y @ianrelecker/m365mcp init
+```
+
+Fill in the Microsoft values in the env file it creates:
+
+```text
+~/.m365mcp/.env
+```
+
+On Windows, that is usually:
+
+```text
+C:\Users\YOUR_WINDOWS_USER\.m365mcp\.env
+```
+
+You can check the setup with:
+
+```bash
+npx -y @ianrelecker/m365mcp doctor
+```
+
+## MCP Fields
 
 Use **STDIO**.
 
@@ -17,47 +43,21 @@ m365
 Command to launch:
 
 ```text
-uv
+npx
 ```
 
-If `uv` fails, use the full path from PowerShell:
-
-```powershell
-where uv
-```
-
-For example:
-
-```text
-C:\Users\Administrator\.local\bin\uv.exe
-```
+If `npx` is not found, install Node.js 20 or newer and restart the app.
 
 Arguments:
 
 Add each value below as its own separate argument row.
 
 ```text
-run
+-y
 ```
 
 ```text
---env-file
-```
-
-```text
-.env
-```
-
-```text
-mcp
-```
-
-```text
-run
-```
-
-```text
-src/m365_mcp/server.py
+@ianrelecker/m365mcp
 ```
 
 Environment variables:
@@ -75,86 +75,32 @@ Leave blank
 Working directory:
 
 ```text
-C:\Users\Administrator\Desktop\m365mcp-main
+Leave as the default
 ```
 
-Change that path if your repo is somewhere else. It must be the folder that contains `pyproject.toml` and `.env`.
+The server loads `~/.m365mcp/.env` automatically, so you do not need to point the MCP config at a cloned repo or manually run `uv`.
 
-The command Codex should effectively run is:
+## Custom Env File
 
-```powershell
-uv run --env-file .env mcp run src/m365_mcp/server.py
-```
-
-But in the Codex UI, do **not** paste that full line into `Command to launch`.
-
-## macOS Or Linux
-
-Use **STDIO**.
-
-Name:
-
-```text
-m365
-```
-
-Command to launch:
-
-```text
-uv
-```
-
-If `uv` fails, use the full path from:
-
-```bash
-which uv
-```
-
-Arguments:
-
-Add each value below as its own separate argument row.
-
-```text
-run
-```
+If you do not want to use `~/.m365mcp/.env`, add two more argument rows:
 
 ```text
 --env-file
 ```
 
 ```text
-.env
+C:\full\path\to\.env
 ```
+
+On macOS or Linux, use a Unix path instead:
 
 ```text
-mcp
+/full/path/to/.env
 ```
-
-```text
-run
-```
-
-```text
-src/m365_mcp/server.py
-```
-
-Environment variables:
-
-```text
-Leave blank
-```
-
-Working directory:
-
-```text
-/path/to/m365mcp
-```
-
-Use the real path to the repo folder that contains `pyproject.toml` and `.env`.
 
 ## After Saving
 
-After saving the MCP config, ask Codex to use the M365 MCP or check auth status.
+After saving the MCP config, ask the model to use the M365 MCP or check auth status.
 
 Then open the local auth site:
 
@@ -162,36 +108,37 @@ Then open the local auth site:
 http://localhost:8787/auth/microsoft/start
 ```
 
-If the browser cannot open that page, Codex probably did not start the server. Recheck the command, arguments, working directory, and `.env`.
+If the browser cannot open that page, the server probably did not start. Recheck the command and arguments, then run:
+
+```bash
+npx -y @ianrelecker/m365mcp doctor
+```
 
 ## Common Mistake
 
 Do not set `Command to launch` to this:
 
 ```text
-uv run --env-file .env mcp run src/m365_mcp/server.py
+npx -y @ianrelecker/m365mcp
 ```
 
-That makes Codex look for one executable with that entire name, so the MCP server never starts and Codex will not see any tools.
+That makes the app look for one executable with that entire name, so the MCP server never starts and no tools appear.
 
 Use this instead:
 
 ```text
-Command to launch: uv
+Command to launch: npx
 Arguments:
-run
---env-file
-.env
-mcp
-run
-src/m365_mcp/server.py
+-y
+@ianrelecker/m365mcp
 ```
 
 ## Troubleshooting
 
-- If Codex says no M365 tools were found, the server likely did not start. Check the arguments are separate rows.
-- If `uv` is not found, use the full `uv.exe` path from `where uv`.
-- If the logs mention `.env`, confirm `.env` is in the working directory.
-- If the logs mention `TOKEN_ENCRYPTION_KEY`, generate a real base64 32-byte key and update `.env`.
+- If no M365 tools were found, the server likely did not start. Check that the arguments are separate rows.
+- If `npx` is not found, install Node.js 20 or newer and restart the app.
+- If `uv` is not found, install `uv` or set `UV_PATH` to the full `uv` path.
+- If the logs mention missing Microsoft env values, run `npx -y @ianrelecker/m365mcp init`, fill in `~/.m365mcp/.env`, and restart.
+- If the logs mention `TOKEN_ENCRYPTION_KEY`, run `init` again or generate a real base64 32-byte key.
 - If the logs mention port `8787`, another copy may already be running. Stop the other process and retry.
 - If `auth_status` shows missing scopes, add the missing Microsoft Graph delegated permissions in Azure and reconnect Microsoft.
