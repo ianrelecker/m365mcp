@@ -6,16 +6,10 @@
   },
   "mcpServers": {
     "m365": {
-      "command": "uv",
+      "command": "npx",
       "args": [
-        "--directory",
-        "C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp",
-        "run",
-        "--env-file",
-        ".env",
-        "mcp",
-        "run",
-        "src/m365_mcp/server.py"
+        "-y",
+        "@ianrelecker/m365mcp"
       ]
     }
   }
