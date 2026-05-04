@@ -63,7 +63,9 @@ function run() {
     "--project",
     packageRoot,
     "--no-dev",
-    "m365-mcp",
+    "python",
+    "-m",
+    "m365_mcp.server",
     ...userArgs,
   ];
 

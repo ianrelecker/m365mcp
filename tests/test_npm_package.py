@@ -26,5 +26,7 @@ def test_npm_launcher_is_executable_and_uses_uv_project() -> None:
     assert content.startswith("#!/usr/bin/env node")
     assert mode & stat.S_IXUSR
     assert '"--project"' in content
-    assert '"m365-mcp"' in content
+    assert '"python"' in content
+    assert '"-m"' in content
+    assert '"m365_mcp.server"' in content
     assert "M365_MCP_HOME" in content

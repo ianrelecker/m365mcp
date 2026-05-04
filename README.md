@@ -231,6 +231,7 @@ Common fixes:
 - If the local auth page does not open, make sure Claude Desktop is running and the `m365` MCP server is enabled.
 - If Claude cannot find `npx`, install Node.js 20 or newer.
 - If Claude cannot find `uv`, add `UV_PATH` to the MCP `env` block with the full path from `where uv` on Windows or `which uv` on macOS/Linux.
+- If Windows logs say `uv trampoline failed to spawn Python child process`, replace any legacy `uv run mcp run src/m365_mcp/server.py` config with the `npx -y @ianrelecker/m365mcp` config above. The npm launcher runs `python -m m365_mcp.server` directly to avoid the generated `mcp` console-script trampoline.
 - If Microsoft sign-in fails, confirm the Azure redirect URI exactly matches `http://localhost:8787/auth/microsoft/callback`.
 - If `auth_status` reports `missingScopes`, add the missing permissions in Azure, grant consent if needed, then reconnect Microsoft.
 
@@ -253,7 +254,7 @@ uv run pytest
 Optional manual smoke test:
 
 ```bash
-uv run mcp run src/m365_mcp/server.py
+uv run python -m m365_mcp.server
 ```
 
 Stop the manual smoke test before opening Claude Desktop. Two copies cannot both use the same localhost helper port.
