@@ -41,6 +41,13 @@ def config_factory(
                 tmp_path / ".tokens" / "microsoft-graph-token.json",
             )
         )
+        audit_log_file = Path(
+            overrides.pop(
+                "auditLogFile",
+                tmp_path / ".audit" / "m365-mcp-audit.jsonl",
+            )
+        )
+        audit_log_enabled = bool(overrides.pop("auditLogEnabled", True))
         microsoft = MicrosoftConfig(
             tenantId=str(overrides.pop("tenantId", "tenant-id")),
             clientId=str(overrides.pop("clientId", "client-id")),
@@ -81,6 +88,8 @@ def config_factory(
             encryptionKey=TEST_KEY,
             knownMailboxes=["shared@example.com"],
             tokenFile=token_file,
+            auditLogEnabled=audit_log_enabled,
+            auditLogFile=audit_log_file,
         )
 
     return factory

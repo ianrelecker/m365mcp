@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import socket
 from pathlib import Path
 
@@ -40,7 +41,7 @@ class StubGraphClient:
         raise AssertionError("Not expected in this test")
 
     async def search_messages(self, **kwargs):
-        raise AssertionError("Not expected in this test")
+        raise AssertionError(f"Not expected in this test: {kwargs}")
 
     async def get_message(self, **kwargs):
         raise AssertionError("Not expected in this test")
@@ -271,3 +272,82 @@ async def test_mcp_server_stays_up_when_helper_port_is_busy(config_factory) -> N
     finally:
         sock.close()
         await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_mcp_server_writes_redacted_audit_records(config_factory, tmp_path) -> None:
+    audit_file = tmp_path / "audit" / "m365.jsonl"
+    graph = StubGraphClient()
+    http_client = httpx.AsyncClient()
+    runtime = RuntimeServices(
+        config=config_factory(
+            localBaseUrl="http://localhost:8787",
+            auditLogFile=audit_file,
+        ),
+        microsoft_auth=StubAuthService(),
+        graph=graph,
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(server, raise_exceptions=False) as session:
+        await session.call_tool(
+            "mail_create_draft",
+            {
+                "subject": "Sensitive subject",
+                "body": "Sensitive draft body",
+                "mailbox": "shared@example.com",
+                "to": ["recipient@example.com"],
+                "from": "delegated@example.com",
+            },
+        )
+        failed = await session.call_tool("mail_search", {"query": "secret search"})
+
+    assert failed.isError is True
+    records = [
+        json.loads(line)
+        for line in audit_file.read_text("utf-8").splitlines()
+    ]
+    assert records[0]["tool"] == "mail_create_draft"
+    assert records[0]["outcome"] == "success"
+    assert records[0]["category"] == "write"
+    assert records[0]["mailbox"] == "shared@example.com"
+    assert records[1]["tool"] == "mail_search"
+    assert records[1]["outcome"] == "error"
+    assert records[1]["error"]["type"] == "ToolError"
+
+    serialized = "\n".join(json.dumps(record) for record in records)
+    assert "Sensitive draft body" not in serialized
+    assert "Sensitive subject" not in serialized
+    assert "recipient@example.com" not in serialized
+    assert "secret search" not in serialized
+
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_mcp_server_skips_audit_file_when_disabled(config_factory, tmp_path) -> None:
+    audit_file = tmp_path / "audit" / "disabled.jsonl"
+    http_client = httpx.AsyncClient()
+    runtime = RuntimeServices(
+        config=config_factory(
+            localBaseUrl="http://localhost:8787",
+            auditLogEnabled=False,
+            auditLogFile=audit_file,
+        ),
+        microsoft_auth=StubAuthService(),
+        graph=StubGraphClient(),
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(server, raise_exceptions=True) as session:
+        await session.call_tool("auth_status", {})
+
+    assert not audit_file.exists()
+
+    await http_client.aclose()

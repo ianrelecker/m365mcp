@@ -75,3 +75,6 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - The server acts as the signed-in user and can access shared resources only where that user already has permission.
 - Prefer draft-first workflows for mail that will be sent.
 - Prefer folder IDs after discovery to avoid accidentally acting on the wrong subfolder.
+- Microsoft sign-in uses PKCE to harden the authorization-code exchange.
+- Local JSONL audit logs are written by default to `.audit/m365-mcp-audit.jsonl`.
+- Audit logs record tool metadata and key IDs only; they do not include tokens, secrets, email bodies, attachment content, or raw Microsoft Graph payloads.
