@@ -9,7 +9,7 @@ It is a local MCP server. That means Claude starts it on your computer when Clau
 Claude can:
 
 - Check and search mail, including shared mailboxes you can access.
-- Read message bodies, threads, categories, flags, read/unread state, subfolders, and small text/PDF attachments.
+- Read message bodies, threads, categories, flags, Focused/Other classification, read/unread state, subfolders, and small text/PDF attachments.
 - Draft or send mail, reply in threads, move messages, and mark messages read/unread.
 - Create, rename, delete, and navigate mail folders and subfolders.
 - List, create, update, and delete Outlook Inbox rules.
@@ -83,6 +83,8 @@ Add these delegated Microsoft Graph permissions:
 - `offline_access`
 
 If your organization requires admin approval, click `Grant admin consent`.
+
+Focused/Other mail triage uses Microsoft Graph's `inferenceClassification` message property. There is no separate delegated Graph permission named `inferenceClassification`; the existing mail read/write scopes above cover reading that field. Microsoft documents this in [Manage Focused Inbox](https://learn.microsoft.com/en-us/graph/api/resources/manage-focused-inbox?view=graph-rest-1.0) and the [message resource](https://learn.microsoft.com/en-us/graph/api/resources/message?view=graph-rest-1.0).
 
 ## 3. Create Your .env File
 
@@ -313,9 +315,9 @@ Contacts and calendar:
 - Use `contacts_search` to resolve recipients before drafting mail.
 - Use `contacts_list_folders` when contacts are organized in folders.
 - Contact tools can create, update, and delete Outlook contacts in mailboxes the signed-in user can access.
-- Contacts include category names, parent folder IDs, and structured business/home/other addresses.
+- Contacts include category names, parent folder IDs, business home page, personal notes, and structured business/home/other addresses.
 - Use `contacts_set_categories`, `contacts_add_categories`, `contacts_remove_categories`, and `contacts_clear_categories` to manage contact categories. These use the same Outlook master categories as mail.
-- Use `contacts_update` with `businessAddress`, `homeAddress`, or `otherAddress` objects for street, city, state, country or region, and postal code changes.
+- Use `contacts_update` with `businessHomePage`, `personalNotes`, `businessAddress`, `homeAddress`, or `otherAddress` for website, notes, street, city, state, country or region, and postal code changes.
 
 ## Security Notes
 

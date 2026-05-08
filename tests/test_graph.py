@@ -22,6 +22,7 @@ async def test_list_messages_and_search_messages() -> None:
 
         if request.url.path.endswith("/mailFolders('Inbox')/messages"):
             assert request.url.params["$top"] == "100"
+            assert "inferenceClassification" in request.url.params["$select"]
             return httpx.Response(
                 200,
                 json={
@@ -35,6 +36,7 @@ async def test_list_messages_and_search_messages() -> None:
                             "bodyPreview": "Preview",
                             "webLink": "https://outlook.example/messages/m1",
                             "isDraft": False,
+                            "inferenceClassification": "focused",
                             "conversationId": "conv-1",
                         }
                     ]
@@ -45,9 +47,19 @@ async def test_list_messages_and_search_messages() -> None:
             assert request.headers["consistencylevel"] == "eventual"
             assert request.url.params["$top"] == "50"
             assert request.url.params["$search"] == "\"from:\\\"boss\\\"\""
+            assert "inferenceClassification" in request.url.params["$select"]
             return httpx.Response(
                 200,
-                json={"value": [{"id": "m2", "subject": "Search hit", "bodyPreview": ""}]},
+                json={
+                    "value": [
+                        {
+                            "id": "m2",
+                            "subject": "Search hit",
+                            "bodyPreview": "",
+                            "inferenceClassification": "other",
+                        }
+                    ]
+                },
             )
 
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
@@ -58,10 +70,12 @@ async def test_list_messages_and_search_messages() -> None:
     listed = await graph.list_messages(mailbox=None, folder="Inbox", top=999)
     assert listed.mailbox == "me"
     assert listed.messages[0].from_ == "sender@example.com"
+    assert listed.messages[0].inferenceClassification == "focused"
 
     searched = await graph.search_messages(query='from:"boss"', top=99)
     assert searched.mailbox == "me"
     assert searched.messages[0].id == "m2"
+    assert searched.messages[0].inferenceClassification == "other"
 
     await client.aclose()
 
@@ -70,6 +84,7 @@ async def test_list_messages_and_search_messages() -> None:
 async def test_get_message_and_list_drafts() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/messages/msg-123"):
+            assert "inferenceClassification" in request.url.params["$select"]
             return httpx.Response(
                 200,
                 json={
@@ -82,6 +97,7 @@ async def test_get_message_and_list_drafts() -> None:
                     "bodyPreview": "Preview",
                     "body": {"contentType": "html", "content": "<p>Hello</p>"},
                     "isDraft": False,
+                    "inferenceClassification": "focused",
                 },
             )
 
@@ -100,6 +116,7 @@ async def test_get_message_and_list_drafts() -> None:
     assert message.mailbox == "shared@example.com"
     assert message.message.to == ["to@example.com"]
     assert message.message.body.contentType == "html"
+    assert message.message.inferenceClassification == "focused"
 
     drafts = await graph.list_drafts(mailbox="shared@example.com", top=10)
     assert drafts.drafts[0].isDraft is True
@@ -338,10 +355,12 @@ async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
             )
 
         if request.url.path.endswith("/mailFolders/acme-id/messages") and request.method == "GET":
+            assert "inferenceClassification" in request.url.params["$select"]
             assert request.url.params["$filter"] == (
                 "isRead eq false and hasAttachments eq true and "
                 "importance eq 'high' and categories/any(c:c eq 'Client') and "
-                "flag/flagStatus eq 'flagged'"
+                "flag/flagStatus eq 'flagged' and "
+                "inferenceClassification eq 'focused'"
             )
             return httpx.Response(
                 200,
@@ -360,6 +379,7 @@ async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
                             "importance": "high",
                             "categories": ["Client"],
                             "flag": {"flagStatus": "flagged"},
+                            "inferenceClassification": "focused",
                             "parentFolderId": "acme-id",
                             "internetMessageId": "<message@example.com>",
                             "conversationId": "conv-nav",
@@ -392,6 +412,7 @@ async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
         importance="high",
         categories=["Client"],
         flagStatus="flagged",
+        inferenceClassification="focused",
     )
     message = listed.messages[0]
     assert message.sender == "assistant@example.com"
@@ -400,6 +421,7 @@ async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
     assert message.hasAttachments is True
     assert message.categories == ["Client"]
     assert message.flagStatus == "flagged"
+    assert message.inferenceClassification == "focused"
     assert message.parentFolderId == "acme-id"
 
     moved = await graph.move_message(
@@ -827,6 +849,8 @@ async def test_contacts_crud_search_and_folders() -> None:
             "surname": "Lovelace",
             "companyName": "Analytical Engines",
             "jobTitle": "Mathematician",
+            "businessHomePage": "https://analytical.example",
+            "personalNotes": "Analytical notes for client follow-up",
             "businessPhones": ["555-0100"],
             "mobilePhone": "555-0101",
             "emailAddresses": [{"address": "ada@example.com", "name": name}],
@@ -870,6 +894,8 @@ async def test_contacts_crud_search_and_folders() -> None:
         if request.url.path.endswith("/contacts") and request.method == "GET":
             assert "categories" in request.url.params["$select"]
             assert "businessAddress" in request.url.params["$select"]
+            assert "businessHomePage" in request.url.params["$select"]
+            assert "personalNotes" in request.url.params["$select"]
             if "$filter" in request.url.params:
                 assert "emailAddresses/any" in request.url.params["$filter"]
             return httpx.Response(200, json={"value": [contact()]})
@@ -882,6 +908,8 @@ async def test_contacts_crud_search_and_folders() -> None:
                 {"address": "ada@example.com", "name": "Ada Lovelace"}
             ]
             assert body["categories"] == ["Client", "VIP"]
+            assert body["businessHomePage"] == "https://ada.example"
+            assert body["personalNotes"] == "Met at the analytics conference"
             assert body["businessAddress"] == {
                 "street": "1 Analytical Way",
                 "city": "London",
@@ -893,6 +921,9 @@ async def test_contacts_crud_search_and_folders() -> None:
         if request.url.path.endswith("/contacts/contact-1") and request.method == "PATCH":
             if "categories" in body:
                 contact_categories[:] = body["categories"]
+            if "displayName" in body:
+                assert body["businessHomePage"] == "https://byron.example"
+                assert body["personalNotes"] == "Updated relationship notes"
             return httpx.Response(
                 200,
                 json=contact("contact-1", body.get("displayName", "Ada Lovelace")),
@@ -913,6 +944,8 @@ async def test_contacts_crud_search_and_folders() -> None:
     assert listed.contacts[0].emailAddresses == ["ada@example.com"]
     assert listed.contacts[0].categories == ["Client"]
     assert listed.contacts[0].parentFolderId == "contacts-folder"
+    assert listed.contacts[0].businessHomePage == "https://analytical.example"
+    assert listed.contacts[0].personalNotes == "Analytical notes for client follow-up"
     assert listed.contacts[0].businessAddress.city == "London"
     assert listed.contacts[0].homeAddress is None
     assert listed.contacts[0].otherAddress.state == "WA"
@@ -923,17 +956,26 @@ async def test_contacts_crud_search_and_folders() -> None:
     )
     assert searched.contacts[0].displayName == "Ada Lovelace"
 
+    searched_note = await graph.search_contacts(
+        mailbox="shared@example.com",
+        query="follow-up",
+    )
+    assert searched_note.contacts[0].personalNotes == "Analytical notes for client follow-up"
+
     got = await graph.get_contact(
         mailbox="shared@example.com",
         contactId="contact-1",
     )
     assert got.contact.companyName == "Analytical Engines"
+    assert got.contact.businessHomePage == "https://analytical.example"
 
     created = await graph.create_contact(
         mailbox="shared@example.com",
         displayName="Ada Lovelace",
         emailAddresses=["ada@example.com"],
         categories=["Client", "VIP"],
+        businessHomePage="https://ada.example",
+        personalNotes="Met at the analytics conference",
         businessAddress={
             "street": "1 Analytical Way",
             "city": "London",
@@ -948,6 +990,8 @@ async def test_contacts_crud_search_and_folders() -> None:
         mailbox="shared@example.com",
         contactId="contact-1",
         displayName="Ada Byron",
+        businessHomePage="https://byron.example",
+        personalNotes="Updated relationship notes",
         homeAddress={"city": "Oxford", "countryOrRegion": "UK"},
         otherAddress={"street": "PO Box 1", "city": "Seattle"},
     )

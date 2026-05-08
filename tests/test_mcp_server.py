@@ -162,9 +162,18 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "calendar_delete_event",
         }
         tool_by_name = {tool.name: tool for tool in tools.tools}
+        mail_list_schema = tool_by_name["mail_list"].inputSchema
+        assert "inferenceClassification" in mail_list_schema["properties"]
+        mail_check_inbox_schema = tool_by_name["mail_check_inbox"].inputSchema
+        assert "inferenceClassification" in mail_check_inbox_schema["properties"]
         contact_create_schema = tool_by_name["contacts_create"].inputSchema
         assert "categories" in contact_create_schema["properties"]
         assert "businessAddress" in contact_create_schema["properties"]
+        assert "businessHomePage" in contact_create_schema["properties"]
+        assert "personalNotes" in contact_create_schema["properties"]
+        contact_update_schema = tool_by_name["contacts_update"].inputSchema
+        assert "businessHomePage" in contact_update_schema["properties"]
+        assert "personalNotes" in contact_update_schema["properties"]
         assert "countryOrRegion" in str(contact_create_schema)
 
         resources = await session.list_resources()
