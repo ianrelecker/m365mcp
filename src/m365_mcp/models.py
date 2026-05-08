@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,6 +48,7 @@ class MessageSummary(AppModel):
     importance: str | None = None
     categories: list[str] = Field(default_factory=list)
     flagStatus: str | None = None
+    inferenceClassification: Literal["focused", "other"] | None = None
     parentFolderId: str | None = None
     internetMessageId: str | None = None
     conversationId: str | None = None
@@ -78,6 +79,7 @@ class FullMessage(AppModel):
     importance: str | None = None
     categories: list[str] = Field(default_factory=list)
     flagStatus: str | None = None
+    inferenceClassification: Literal["focused", "other"] | None = None
     parentFolderId: str | None = None
     internetMessageId: str | None = None
     conversationId: str | None = None
@@ -286,6 +288,8 @@ class ContactInfo(AppModel):
     surname: str | None = None
     companyName: str | None = None
     jobTitle: str | None = None
+    businessHomePage: str | None = None
+    personalNotes: str | None = None
     businessPhones: list[str] = Field(default_factory=list)
     mobilePhone: str | None = None
     emailAddresses: list[str] = Field(default_factory=list)

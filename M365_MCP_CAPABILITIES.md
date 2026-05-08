@@ -7,6 +7,7 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Leave `mailbox` blank for the signed-in user's mailbox.
 - Pass a shared mailbox address, such as `shared@company.com`, when the signed-in user has delegated access.
 - Use `mail_check_inbox` for the fastest inbox triage path. It defaults to unread messages in `Inbox`.
+- Use `inferenceClassification="focused"` or `"other"` with `mail_check_inbox` or `mail_list` to separate Focused Inbox mail from Other mail before reading bodies.
 
 ## Folders And Subfolders
 
@@ -20,7 +21,8 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 ## Message Triage
 
-- Message summaries include read state, attachment presence, importance, categories, flag status, parent folder ID, sender, reply-to, internet message ID, and conversation ID.
+- Message summaries include read state, attachment presence, importance, categories, flag status, Focused/Other inference classification, parent folder ID, sender, reply-to, internet message ID, and conversation ID.
+- `inferenceClassification` is a Microsoft Graph message property for Focused Inbox, not a separate app-registration permission.
 - Use `mail_mark_read` to mark mail read or unread.
 - Use `mail_set_flag` to set follow-up status.
 - Use category tools to set, add, remove, clear, or manage Outlook categories.
@@ -57,8 +59,8 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `contacts_search` to resolve recipients before drafting mail.
 - Use `contacts_list_folders` when contacts are organized in folders.
 - Contact tools can create, update, and delete Outlook contacts in mailboxes the signed-in user can access.
-- Contact results include category names, parent folder IDs, and structured business/home/other addresses.
-- Use `contacts_update` to edit contact names, email addresses, phones, categories, and physical addresses.
+- Contact results include category names, parent folder IDs, business home pages, personal notes, and structured business/home/other addresses.
+- Use `contacts_update` to edit contact names, email addresses, phones, categories, business home page, personal notes, and physical addresses.
 - Use `contacts_delete` only after confirming the exact `contactId`; pass `folderId` when the contact lives outside the default contacts folder.
 - Use `contacts_set_categories`, `contacts_add_categories`, `contacts_remove_categories`, and `contacts_clear_categories` for contact category changes.
 - Mail and contacts share the same Outlook master categories, so use `mail_list_categories` or `mail_create_category` when the category definition itself needs to be inspected or created.

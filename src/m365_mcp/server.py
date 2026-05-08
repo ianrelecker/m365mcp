@@ -359,6 +359,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         importance: Literal["low", "normal", "high"] | None = None,
         categories: list[str] | None = None,
         flagStatus: Literal["notFlagged", "flagged", "complete"] | None = None,
+        inferenceClassification: Literal["focused", "other"] | None = None,
     ) -> MailListResult:
         runtime = runtime_provider.get()
         return await runtime.graph.list_messages(
@@ -372,6 +373,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             importance=importance,
             categories=categories,
             flagStatus=flagStatus,
+            inferenceClassification=inferenceClassification,
         )
 
     @mcp.tool(
@@ -387,6 +389,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         folderId: str | None = None,
         top: int = 25,
         includeRead: bool = False,
+        inferenceClassification: Literal["focused", "other"] | None = None,
     ) -> MailCheckInboxResult:
         runtime = runtime_provider.get()
         return await runtime.graph.check_inbox(
@@ -395,6 +398,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             folderId=folderId,
             top=top,
             includeRead=includeRead,
+            inferenceClassification=inferenceClassification,
         )
 
     @mcp.tool(
@@ -1098,6 +1102,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         emailAddresses: list[str] | None = None,
         companyName: str | None = None,
         jobTitle: str | None = None,
+        businessHomePage: str | None = None,
+        personalNotes: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
         categories: list[str] | None = None,
@@ -1115,6 +1121,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             emailAddresses=emailAddresses,
             companyName=companyName,
             jobTitle=jobTitle,
+            businessHomePage=businessHomePage,
+            personalNotes=personalNotes,
             businessPhones=businessPhones,
             mobilePhone=mobilePhone,
             categories=categories,
@@ -1140,6 +1148,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         emailAddresses: list[str] | None = None,
         companyName: str | None = None,
         jobTitle: str | None = None,
+        businessHomePage: str | None = None,
+        personalNotes: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
         categories: list[str] | None = None,
@@ -1158,6 +1168,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             emailAddresses=emailAddresses,
             companyName=companyName,
             jobTitle=jobTitle,
+            businessHomePage=businessHomePage,
+            personalNotes=personalNotes,
             businessPhones=businessPhones,
             mobilePhone=mobilePhone,
             categories=categories,

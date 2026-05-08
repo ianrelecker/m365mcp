@@ -71,20 +71,21 @@ def _utc_now_iso() -> str:
 MESSAGE_SUMMARY_SELECT = (
     "id,subject,from,sender,replyTo,receivedDateTime,sentDateTime,"
     "bodyPreview,webLink,isDraft,isRead,hasAttachments,importance,"
-    "categories,flag,parentFolderId,internetMessageId,conversationId"
+    "categories,flag,inferenceClassification,parentFolderId,internetMessageId,"
+    "conversationId"
 )
 MESSAGE_FULL_SELECT = (
     "id,subject,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,"
     "receivedDateTime,sentDateTime,bodyPreview,body,webLink,isDraft,isRead,"
-    "hasAttachments,importance,categories,flag,parentFolderId,internetMessageId,"
-    "conversationId"
+    "hasAttachments,importance,categories,flag,inferenceClassification,"
+    "parentFolderId,internetMessageId,conversationId"
 )
 MAIL_FOLDER_SELECT = (
     "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden"
 )
 CONTACT_SELECT = (
     "id,displayName,givenName,surname,companyName,jobTitle,"
-    "businessPhones,mobilePhone,emailAddresses,categories,"
+    "businessHomePage,personalNotes,businessPhones,mobilePhone,emailAddresses,categories,"
     "businessAddress,homeAddress,otherAddress,parentFolderId"
 )
 CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount"
@@ -152,6 +153,7 @@ class MicrosoftGraphClient:
         importance: str | None = None,
         categories: list[str] | None = None,
         flagStatus: str | None = None,
+        inferenceClassification: str | None = None,
     ) -> MailListResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
@@ -172,6 +174,7 @@ class MicrosoftGraphClient:
             importance=importance,
             categories=categories,
             flagStatus=flagStatus,
+            inferenceClassification=inferenceClassification,
         )
         params: dict[str, str] = {
             "$top": str(min(top, 100)),
@@ -200,6 +203,7 @@ class MicrosoftGraphClient:
         folderId: str | None = None,
         top: int = 25,
         includeRead: bool = False,
+        inferenceClassification: str | None = None,
     ) -> MailCheckInboxResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
@@ -215,6 +219,7 @@ class MicrosoftGraphClient:
             folderPath=folderPath,
             top=top,
             isRead=None if includeRead else False,
+            inferenceClassification=inferenceClassification,
         )
         return MailCheckInboxResult(
             mailbox=normalized_mailbox or "me",
@@ -1193,6 +1198,8 @@ class MicrosoftGraphClient:
         emailAddresses: list[str] | None = None,
         companyName: str | None = None,
         jobTitle: str | None = None,
+        businessHomePage: str | None = None,
+        personalNotes: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
         categories: list[str] | None = None,
@@ -1211,6 +1218,8 @@ class MicrosoftGraphClient:
                 emailAddresses=emailAddresses,
                 companyName=companyName,
                 jobTitle=jobTitle,
+                businessHomePage=businessHomePage,
+                personalNotes=personalNotes,
                 businessPhones=businessPhones,
                 mobilePhone=mobilePhone,
                 categories=categories,
@@ -1236,6 +1245,8 @@ class MicrosoftGraphClient:
         emailAddresses: list[str] | None = None,
         companyName: str | None = None,
         jobTitle: str | None = None,
+        businessHomePage: str | None = None,
+        personalNotes: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
         categories: list[str] | None = None,
@@ -1254,6 +1265,8 @@ class MicrosoftGraphClient:
                 emailAddresses=emailAddresses,
                 companyName=companyName,
                 jobTitle=jobTitle,
+                businessHomePage=businessHomePage,
+                personalNotes=personalNotes,
                 businessPhones=businessPhones,
                 mobilePhone=mobilePhone,
                 categories=categories,
@@ -1881,6 +1894,7 @@ class MicrosoftGraphClient:
         importance: str | None,
         categories: list[str] | None,
         flagStatus: str | None,
+        inferenceClassification: str | None,
     ) -> list[str]:
         filters: list[str] = []
         if isRead is not None:
@@ -1899,6 +1913,11 @@ class MicrosoftGraphClient:
         if flagStatus:
             filters.append(
                 f"flag/flagStatus eq '{self._escape_odata_string(flagStatus)}'"
+            )
+        if inferenceClassification:
+            filters.append(
+                "inferenceClassification eq "
+                f"'{self._escape_odata_string(inferenceClassification)}'"
             )
         return filters
 
@@ -1923,6 +1942,8 @@ class MicrosoftGraphClient:
         emailAddresses: list[str] | None,
         companyName: str | None,
         jobTitle: str | None,
+        businessHomePage: str | None,
+        personalNotes: str | None,
         businessPhones: list[str] | None,
         mobilePhone: str | None,
         categories: list[str] | None,
@@ -1936,6 +1957,8 @@ class MicrosoftGraphClient:
             "surname": surname,
             "companyName": companyName,
             "jobTitle": jobTitle,
+            "businessHomePage": businessHomePage,
+            "personalNotes": personalNotes,
             "businessPhones": businessPhones,
             "mobilePhone": mobilePhone,
             "emailAddresses": [
@@ -1975,6 +1998,8 @@ class MicrosoftGraphClient:
             contact.surname,
             contact.companyName,
             contact.jobTitle,
+            contact.businessHomePage,
+            contact.personalNotes,
             contact.mobilePhone,
             *contact.businessPhones,
             *contact.emailAddresses,
@@ -2166,6 +2191,8 @@ class MicrosoftGraphClient:
             surname=self._nullable_string(contact.get("surname")),
             companyName=self._nullable_string(contact.get("companyName")),
             jobTitle=self._nullable_string(contact.get("jobTitle")),
+            businessHomePage=self._nullable_string(contact.get("businessHomePage")),
+            personalNotes=self._nullable_string(contact.get("personalNotes")),
             businessPhones=[
                 str(phone) for phone in (contact.get("businessPhones") or []) if phone
             ],
@@ -2218,6 +2245,9 @@ class MicrosoftGraphClient:
                 str(category) for category in (message.get("categories") or [])
             ],
             flagStatus=self._nullable_string((message.get("flag") or {}).get("flagStatus")),
+            inferenceClassification=self._nullable_string(
+                message.get("inferenceClassification")
+            ),
             parentFolderId=self._nullable_string(message.get("parentFolderId")),
             internetMessageId=self._nullable_string(message.get("internetMessageId")),
             conversationId=self._nullable_string(message.get("conversationId")),
@@ -2258,6 +2288,9 @@ class MicrosoftGraphClient:
                 str(category) for category in (message.get("categories") or [])
             ],
             flagStatus=self._nullable_string((message.get("flag") or {}).get("flagStatus")),
+            inferenceClassification=self._nullable_string(
+                message.get("inferenceClassification")
+            ),
             parentFolderId=self._nullable_string(message.get("parentFolderId")),
             internetMessageId=self._nullable_string(message.get("internetMessageId")),
             conversationId=self._nullable_string(message.get("conversationId")),
