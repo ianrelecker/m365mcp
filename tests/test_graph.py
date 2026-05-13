@@ -849,8 +849,10 @@ async def test_contacts_crud_search_and_folders() -> None:
             "surname": "Lovelace",
             "companyName": "Analytical Engines",
             "jobTitle": "Mathematician",
-            "businessHomePage": "https://analytical.example",
             "personalNotes": "Analytical notes for client follow-up",
+            "singleValueExtendedProperties": [
+                {"id": "String 0x3A50", "value": "https://analytical.example"}
+            ],
             "businessPhones": ["555-0100"],
             "mobilePhone": "555-0101",
             "emailAddresses": [{"address": "ada@example.com", "name": name}],
@@ -894,13 +896,19 @@ async def test_contacts_crud_search_and_folders() -> None:
         if request.url.path.endswith("/contacts") and request.method == "GET":
             assert "categories" in request.url.params["$select"]
             assert "businessAddress" in request.url.params["$select"]
-            assert "businessHomePage" in request.url.params["$select"]
+            assert "businessHomePage" not in request.url.params["$select"]
             assert "personalNotes" in request.url.params["$select"]
+            assert request.url.params["$expand"] == (
+                "singleValueExtendedProperties($filter=id eq 'String 0x3A50')"
+            )
             if "$filter" in request.url.params:
                 assert "emailAddresses/any" in request.url.params["$filter"]
             return httpx.Response(200, json={"value": [contact()]})
 
         if request.url.path.endswith("/contacts/contact-1") and request.method == "GET":
+            assert request.url.params["$expand"] == (
+                "singleValueExtendedProperties($filter=id eq 'String 0x3A50')"
+            )
             return httpx.Response(200, json=contact())
 
         if request.url.path.endswith("/contacts") and request.method == "POST":
@@ -908,8 +916,10 @@ async def test_contacts_crud_search_and_folders() -> None:
                 {"address": "ada@example.com", "name": "Ada Lovelace"}
             ]
             assert body["categories"] == ["Client", "VIP"]
-            assert body["businessHomePage"] == "https://ada.example"
             assert body["personalNotes"] == "Met at the analytics conference"
+            assert body["singleValueExtendedProperties"] == [
+                {"id": "String 0x3A50", "value": "https://ada.example"}
+            ]
             assert body["businessAddress"] == {
                 "street": "1 Analytical Way",
                 "city": "London",
@@ -922,8 +932,10 @@ async def test_contacts_crud_search_and_folders() -> None:
             if "categories" in body:
                 contact_categories[:] = body["categories"]
             if "displayName" in body:
-                assert body["businessHomePage"] == "https://byron.example"
                 assert body["personalNotes"] == "Updated relationship notes"
+                assert body["singleValueExtendedProperties"] == [
+                    {"id": "String 0x3A50", "value": "https://byron.example"}
+                ]
             return httpx.Response(
                 200,
                 json=contact("contact-1", body.get("displayName", "Ada Lovelace")),
@@ -944,7 +956,7 @@ async def test_contacts_crud_search_and_folders() -> None:
     assert listed.contacts[0].emailAddresses == ["ada@example.com"]
     assert listed.contacts[0].categories == ["Client"]
     assert listed.contacts[0].parentFolderId == "contacts-folder"
-    assert listed.contacts[0].businessHomePage == "https://analytical.example"
+    assert listed.contacts[0].personalHomePage == "https://analytical.example"
     assert listed.contacts[0].personalNotes == "Analytical notes for client follow-up"
     assert listed.contacts[0].businessAddress.city == "London"
     assert listed.contacts[0].homeAddress is None
@@ -962,19 +974,25 @@ async def test_contacts_crud_search_and_folders() -> None:
     )
     assert searched_note.contacts[0].personalNotes == "Analytical notes for client follow-up"
 
+    searched_home_page = await graph.search_contacts(
+        mailbox="shared@example.com",
+        query="analytical.example",
+    )
+    assert searched_home_page.contacts[0].personalHomePage == "https://analytical.example"
+
     got = await graph.get_contact(
         mailbox="shared@example.com",
         contactId="contact-1",
     )
     assert got.contact.companyName == "Analytical Engines"
-    assert got.contact.businessHomePage == "https://analytical.example"
+    assert got.contact.personalHomePage == "https://analytical.example"
 
     created = await graph.create_contact(
         mailbox="shared@example.com",
         displayName="Ada Lovelace",
         emailAddresses=["ada@example.com"],
         categories=["Client", "VIP"],
-        businessHomePage="https://ada.example",
+        personalHomePage="https://ada.example",
         personalNotes="Met at the analytics conference",
         businessAddress={
             "street": "1 Analytical Way",
@@ -990,7 +1008,7 @@ async def test_contacts_crud_search_and_folders() -> None:
         mailbox="shared@example.com",
         contactId="contact-1",
         displayName="Ada Byron",
-        businessHomePage="https://byron.example",
+        personalHomePage="https://byron.example",
         personalNotes="Updated relationship notes",
         homeAddress={"city": "Oxford", "countryOrRegion": "UK"},
         otherAddress={"street": "PO Box 1", "city": "Seattle"},

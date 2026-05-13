@@ -59,8 +59,9 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `contacts_search` to resolve recipients before drafting mail.
 - Use `contacts_list_folders` when contacts are organized in folders.
 - Contact tools can create, update, and delete Outlook contacts in mailboxes the signed-in user can access.
-- Contact results include category names, parent folder IDs, business home pages, personal notes, and structured business/home/other addresses.
-- Use `contacts_update` to edit contact names, email addresses, phones, categories, business home page, personal notes, and physical addresses.
+- Contact results include category names, parent folder IDs, Outlook Website values, personal notes, and structured business/home/other addresses.
+- Use `personalHomePage` for Outlook Contacts `Other -> Website`; it is stored through the MAPI `PR_PERSONAL_HOME_PAGE` extended property (`String 0x3A50`).
+- Use `contacts_update` to edit contact names, email addresses, phones, categories, Outlook Website, personal notes, and physical addresses.
 - Use `contacts_delete` only after confirming the exact `contactId`; pass `folderId` when the contact lives outside the default contacts folder.
 - Use `contacts_set_categories`, `contacts_add_categories`, `contacts_remove_categories`, and `contacts_clear_categories` for contact category changes.
 - Mail and contacts share the same Outlook master categories, so use `mail_list_categories` or `mail_create_category` when the category definition itself needs to be inspected or created.
