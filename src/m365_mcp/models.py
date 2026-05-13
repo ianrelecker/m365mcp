@@ -288,7 +288,7 @@ class ContactInfo(AppModel):
     surname: str | None = None
     companyName: str | None = None
     jobTitle: str | None = None
-    businessHomePage: str | None = None
+    personalHomePage: str | None = None
     personalNotes: str | None = None
     businessPhones: list[str] = Field(default_factory=list)
     mobilePhone: str | None = None

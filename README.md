@@ -315,9 +315,10 @@ Contacts and calendar:
 - Use `contacts_search` to resolve recipients before drafting mail.
 - Use `contacts_list_folders` when contacts are organized in folders.
 - Contact tools can create, update, and delete Outlook contacts in mailboxes the signed-in user can access.
-- Contacts include category names, parent folder IDs, business home page, personal notes, and structured business/home/other addresses.
+- Contacts include category names, parent folder IDs, Outlook Website values, personal notes, and structured business/home/other addresses.
 - Use `contacts_set_categories`, `contacts_add_categories`, `contacts_remove_categories`, and `contacts_clear_categories` to manage contact categories. These use the same Outlook master categories as mail.
-- Use `contacts_update` with `businessHomePage`, `personalNotes`, `businessAddress`, `homeAddress`, or `otherAddress` for website, notes, street, city, state, country or region, and postal code changes.
+- Use `contacts_update` with `personalHomePage`, `personalNotes`, `businessAddress`, `homeAddress`, or `otherAddress` for website, notes, street, city, state, country or region, and postal code changes.
+- `personalHomePage` maps to Outlook Contacts `Other -> Website` through the MAPI `PR_PERSONAL_HOME_PAGE` extended property (`String 0x3A50`). This does not require an additional Graph permission beyond the existing contact permission.
 
 ## Security Notes
 

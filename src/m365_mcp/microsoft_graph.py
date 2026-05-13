@@ -85,8 +85,13 @@ MAIL_FOLDER_SELECT = (
 )
 CONTACT_SELECT = (
     "id,displayName,givenName,surname,companyName,jobTitle,"
-    "businessHomePage,personalNotes,businessPhones,mobilePhone,emailAddresses,categories,"
+    "personalNotes,businessPhones,mobilePhone,emailAddresses,categories,"
     "businessAddress,homeAddress,otherAddress,parentFolderId"
+)
+PERSONAL_HOME_PAGE_EXTENDED_PROPERTY_ID = "String 0x3A50"
+CONTACT_EXTENDED_PROPERTIES_EXPAND = (
+    "singleValueExtendedProperties($filter=id eq "
+    f"'{PERSONAL_HOME_PAGE_EXTENDED_PROPERTY_ID}')"
 )
 CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount"
 MESSAGE_RULE_SELECT = (
@@ -1110,8 +1115,15 @@ class MicrosoftGraphClient:
         top: int = 25,
     ) -> ContactsListResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
+        params = httpx.QueryParams(
+            {
+                "$top": str(min(top, 100)),
+                "$select": CONTACT_SELECT,
+                "$expand": CONTACT_EXTENDED_PROPERTIES_EXPAND,
+            }
+        )
         result = await self._request(
-            f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams({'$top': str(min(top, 100)), '$select': CONTACT_SELECT})}"
+            f"{self._contacts_path(normalized_mailbox, folderId)}?{params}"
         )
         return ContactsListResult(
             mailbox=normalized_mailbox or "me",
@@ -1133,6 +1145,7 @@ class MicrosoftGraphClient:
         params: dict[str, str] = {
             "$top": str(min(max(top, 1), 100)),
             "$select": CONTACT_SELECT,
+            "$expand": CONTACT_EXTENDED_PROPERTIES_EXPAND,
         }
         if "@" in query_text and " " not in query_text:
             params["$filter"] = (
@@ -1146,7 +1159,7 @@ class MicrosoftGraphClient:
         else:
             contacts = []
             page_url: str | None = (
-                f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams({'$top': '100', '$select': CONTACT_SELECT})}"
+                f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams({'$top': '100', '$select': CONTACT_SELECT, '$expand': CONTACT_EXTENDED_PROPERTIES_EXPAND})}"
             )
             pages_remaining = max(1, min(maxPages, 10))
             while page_url and pages_remaining > 0 and len(contacts) < top:
@@ -1180,7 +1193,7 @@ class MicrosoftGraphClient:
             f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}"
         )
         contact = await self._request(
-            f"{path}?{httpx.QueryParams({'$select': CONTACT_SELECT})}"
+            f"{path}?{httpx.QueryParams({'$select': CONTACT_SELECT, '$expand': CONTACT_EXTENDED_PROPERTIES_EXPAND})}"
         )
         return ContactGetResult(
             mailbox=normalized_mailbox or "me",
@@ -1198,7 +1211,7 @@ class MicrosoftGraphClient:
         emailAddresses: list[str] | None = None,
         companyName: str | None = None,
         jobTitle: str | None = None,
-        businessHomePage: str | None = None,
+        personalHomePage: str | None = None,
         personalNotes: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
@@ -1218,7 +1231,7 @@ class MicrosoftGraphClient:
                 emailAddresses=emailAddresses,
                 companyName=companyName,
                 jobTitle=jobTitle,
-                businessHomePage=businessHomePage,
+                personalHomePage=personalHomePage,
                 personalNotes=personalNotes,
                 businessPhones=businessPhones,
                 mobilePhone=mobilePhone,
@@ -1245,7 +1258,7 @@ class MicrosoftGraphClient:
         emailAddresses: list[str] | None = None,
         companyName: str | None = None,
         jobTitle: str | None = None,
-        businessHomePage: str | None = None,
+        personalHomePage: str | None = None,
         personalNotes: str | None = None,
         businessPhones: list[str] | None = None,
         mobilePhone: str | None = None,
@@ -1265,7 +1278,7 @@ class MicrosoftGraphClient:
                 emailAddresses=emailAddresses,
                 companyName=companyName,
                 jobTitle=jobTitle,
-                businessHomePage=businessHomePage,
+                personalHomePage=personalHomePage,
                 personalNotes=personalNotes,
                 businessPhones=businessPhones,
                 mobilePhone=mobilePhone,
@@ -1942,7 +1955,7 @@ class MicrosoftGraphClient:
         emailAddresses: list[str] | None,
         companyName: str | None,
         jobTitle: str | None,
-        businessHomePage: str | None,
+        personalHomePage: str | None,
         personalNotes: str | None,
         businessPhones: list[str] | None,
         mobilePhone: str | None,
@@ -1957,8 +1970,10 @@ class MicrosoftGraphClient:
             "surname": surname,
             "companyName": companyName,
             "jobTitle": jobTitle,
-            "businessHomePage": businessHomePage,
             "personalNotes": personalNotes,
+            "singleValueExtendedProperties": self._personal_home_page_payload(
+                personalHomePage
+            ),
             "businessPhones": businessPhones,
             "mobilePhone": mobilePhone,
             "emailAddresses": [
@@ -1973,6 +1988,19 @@ class MicrosoftGraphClient:
             "homeAddress": self._contact_address_payload(homeAddress),
             "otherAddress": self._contact_address_payload(otherAddress),
         }
+
+    def _personal_home_page_payload(
+        self,
+        personal_home_page: str | None,
+    ) -> list[dict[str, str]] | None:
+        if personal_home_page is None:
+            return None
+        return [
+            {
+                "id": PERSONAL_HOME_PAGE_EXTENDED_PROPERTY_ID,
+                "value": personal_home_page,
+            }
+        ]
 
     def _contact_address_payload(
         self,
@@ -1998,7 +2026,7 @@ class MicrosoftGraphClient:
             contact.surname,
             contact.companyName,
             contact.jobTitle,
-            contact.businessHomePage,
+            contact.personalHomePage,
             contact.personalNotes,
             contact.mobilePhone,
             *contact.businessPhones,
@@ -2191,7 +2219,7 @@ class MicrosoftGraphClient:
             surname=self._nullable_string(contact.get("surname")),
             companyName=self._nullable_string(contact.get("companyName")),
             jobTitle=self._nullable_string(contact.get("jobTitle")),
-            businessHomePage=self._nullable_string(contact.get("businessHomePage")),
+            personalHomePage=self._map_personal_home_page(contact),
             personalNotes=self._nullable_string(contact.get("personalNotes")),
             businessPhones=[
                 str(phone) for phone in (contact.get("businessPhones") or []) if phone
@@ -2217,6 +2245,14 @@ class MicrosoftGraphClient:
             otherAddress=self._map_contact_address(contact.get("otherAddress")),
             parentFolderId=self._nullable_string(contact.get("parentFolderId")),
         )
+
+    def _map_personal_home_page(self, contact: dict[str, Any]) -> str | None:
+        for property_value in contact.get("singleValueExtendedProperties") or []:
+            if not isinstance(property_value, dict):
+                continue
+            if property_value.get("id") == PERSONAL_HOME_PAGE_EXTENDED_PROPERTY_ID:
+                return self._nullable_string(property_value.get("value"))
+        return None
 
     def _map_message_summary(self, message: dict[str, Any]) -> MessageSummary:
         return MessageSummary(

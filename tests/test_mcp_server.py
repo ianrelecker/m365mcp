@@ -169,10 +169,12 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
         contact_create_schema = tool_by_name["contacts_create"].inputSchema
         assert "categories" in contact_create_schema["properties"]
         assert "businessAddress" in contact_create_schema["properties"]
-        assert "businessHomePage" in contact_create_schema["properties"]
+        assert "businessHomePage" not in contact_create_schema["properties"]
+        assert "personalHomePage" in contact_create_schema["properties"]
         assert "personalNotes" in contact_create_schema["properties"]
         contact_update_schema = tool_by_name["contacts_update"].inputSchema
-        assert "businessHomePage" in contact_update_schema["properties"]
+        assert "businessHomePage" not in contact_update_schema["properties"]
+        assert "personalHomePage" in contact_update_schema["properties"]
         assert "personalNotes" in contact_update_schema["properties"]
         assert "countryOrRegion" in str(contact_create_schema)
 
