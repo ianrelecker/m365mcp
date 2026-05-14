@@ -306,7 +306,9 @@ async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8")) if request.content else None
-        requests.append((request.method, request.url.path, dict(request.url.params), body))
+        requests.append(
+            (request.method, request.url.path, dict(request.url.params), body)
+        )
 
         if request.url.path.endswith("/mailFolders") and request.method == "GET":
             return httpx.Response(
@@ -607,11 +609,11 @@ async def test_folder_mutations_and_rules() -> None:
 @pytest.mark.anyio
 async def test_attachments_threads_and_categories() -> None:
     text_payload = base64.b64encode(b"hello attachment").decode("ascii")
-    requests: list[tuple[str, str, dict[str, object] | None]] = []
+    requests: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8")) if request.content else None
-        requests.append((request.method, request.url.path, body))
+        requests.append((request.method, request.url.path, dict(request.url.params), body))
 
         if request.url.path.endswith("/messages/msg-1/attachments") and request.method == "GET":
             return httpx.Response(
@@ -680,17 +682,33 @@ async def test_attachments_threads_and_categories() -> None:
                 },
             )
 
-        if request.url.path.endswith("/messages") and "conversationId" in request.url.params.get("$filter", ""):
+        if request.url.path.endswith("/messages/msg-1") and request.method == "GET":
+            assert request.url.params["$select"] == "conversationId"
+            return httpx.Response(200, json={"conversationId": "conv-1"})
+
+        if request.url.path.endswith(
+            "/messages"
+        ) and "conversationId" in request.url.params.get("$filter", ""):
+            assert "$orderby" not in request.url.params
             return httpx.Response(
                 200,
                 json={
                     "value": [
+                        {
+                            "id": "msg-2",
+                            "subject": "Follow-up",
+                            "bodyPreview": "Second",
+                            "isDraft": False,
+                            "conversationId": "conv-1",
+                            "receivedDateTime": "2026-05-13T12:05:00Z",
+                        },
                         {
                             "id": "msg-1",
                             "subject": "Hello",
                             "bodyPreview": "First",
                             "isDraft": False,
                             "conversationId": "conv-1",
+                            "receivedDateTime": "2026-05-13T12:00:00Z",
                         }
                     ]
                 },
@@ -709,9 +727,10 @@ async def test_attachments_threads_and_categories() -> None:
             )
 
         if request.url.path.endswith("/outlook/masterCategories/cat-2") and request.method == "PATCH":
+            assert body == {"color": "preset3"}
             return httpx.Response(
                 200,
-                json={"id": "cat-2", "displayName": body["displayName"], "color": body["color"]},
+                json={"id": "cat-2", "displayName": "Prospect", "color": body["color"]},
             )
 
         if request.url.path.endswith("/outlook/masterCategories/cat-2") and request.method == "DELETE":
@@ -749,6 +768,10 @@ async def test_attachments_threads_and_categories() -> None:
     thread = await graph.get_thread(conversationId="conv-1")
     assert thread.messages[0].id == "msg-1"
 
+    thread_by_message = await graph.get_thread(messageId="msg-1")
+    assert thread_by_message.conversationId == "conv-1"
+    assert [message.id for message in thread_by_message.messages] == ["msg-1", "msg-2"]
+
     reply = await graph.create_reply_draft(
         messageId="msg-1",
         comment="<p>Thanks</p>",
@@ -762,12 +785,11 @@ async def test_attachments_threads_and_categories() -> None:
     created = await graph.create_category(displayName="Prospect", color="preset2")
     assert created.category.displayName == "Prospect"
 
-    updated = await graph.update_category(
-        categoryId="cat-2",
-        displayName="Customer",
-        color="preset3",
-    )
+    updated = await graph.update_category(categoryId="cat-2", color="preset3")
     assert updated.category.color == "preset3"
+
+    with pytest.raises(ValueError, match="does not support renaming"):
+        await graph.update_category(categoryId="cat-2", displayName="Customer")
 
     deleted = await graph.delete_category(categoryId="cat-2")
     assert deleted.deleted is True
@@ -880,6 +902,7 @@ async def test_contacts_crud_search_and_folders() -> None:
         requests.append((request.method, request.url.path, dict(request.url.params), body))
 
         if request.url.path.endswith("/contactFolders") and request.method == "GET":
+            assert request.url.params["$select"] == "id,displayName,parentFolderId"
             return httpx.Response(
                 200,
                 json={
@@ -887,7 +910,6 @@ async def test_contacts_crud_search_and_folders() -> None:
                         {
                             "id": "contacts-folder",
                             "displayName": "VIP",
-                            "childFolderCount": 0,
                         }
                     ]
                 },
@@ -951,6 +973,7 @@ async def test_contacts_crud_search_and_folders() -> None:
 
     folders = await graph.list_contact_folders(mailbox="shared@example.com")
     assert folders.folders[0].displayName == "VIP"
+    assert folders.folders[0].childFolderCount == 0
 
     listed = await graph.list_contacts(mailbox="shared@example.com")
     assert listed.contacts[0].emailAddresses == ["ada@example.com"]

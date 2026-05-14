@@ -189,6 +189,8 @@ If Claude says it is not authenticated, or `auth_status` shows missing scopes, o
 http://localhost:8787/auth/microsoft/start
 ```
 
+If `offline_access` is the only missing scope, reconnecting through the local auth link is still the right fix. It allows Microsoft to issue a refresh token so the local server can keep working after the current access token expires.
+
 If `http://localhost:8787/` does not load, Claude probably did not start the MCP server. Open Claude Desktop settings, find the `m365` MCP server, click `View Logs`, and check the troubleshooting section below.
 
 ## Everyday Use
@@ -319,6 +321,12 @@ Contacts and calendar:
 - Use `contacts_set_categories`, `contacts_add_categories`, `contacts_remove_categories`, and `contacts_clear_categories` to manage contact categories. These use the same Outlook master categories as mail.
 - Use `contacts_update` with `personalHomePage`, `personalNotes`, `businessAddress`, `homeAddress`, or `otherAddress` for website, notes, street, city, state, country or region, and postal code changes.
 - `personalHomePage` maps to Outlook Contacts `Other -> Website` through the MAPI `PR_PERSONAL_HOME_PAGE` extended property (`String 0x3A50`). This does not require an additional Graph permission beyond the existing contact permission.
+
+## Mail Notes
+
+- Prefer `mail_check_inbox` or `mail_list` filters for fast inbox triage. `mail_search` uses Microsoft Graph `$search`, which can be slower on large mailboxes.
+- `mail_get_thread` sorts returned thread messages locally by received time when available instead of asking Graph to sort a filtered conversation query.
+- `mail_update_category` can update an Outlook master category color. Microsoft Graph does not support renaming an existing master category; create a new category and delete the old one only after confirming that is safe.
 
 ## Security Notes
 
