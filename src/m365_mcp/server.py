@@ -633,7 +633,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         name="mail_search",
         description=(
             "Search a mailbox using Microsoft Graph $search. Use mailbox for "
-            "shared/delegated mailboxes."
+            "shared/delegated mailboxes. Prefer mail_list filters for quick "
+            "inbox triage because Graph search can be slower on large mailboxes."
         ),
     )
     async def mail_search(
@@ -971,12 +972,26 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
 
     @mcp.tool(
         name="mail_update_category",
-        description="Update an Outlook master category definition.",
+        description=(
+            "Update an Outlook master category color. Microsoft Graph does not "
+            "support renaming existing master categories."
+        ),
     )
     async def mail_update_category(
         categoryId: str,
-        displayName: str | None = None,
-        color: str | None = None,
+        displayName: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Unsupported for existing Outlook master categories; create "
+                    "a new category instead of renaming."
+                )
+            ),
+        ] = None,
+        color: Annotated[
+            str | None,
+            Field(description="New Outlook category color, for example preset3."),
+        ] = None,
         mailbox: str | None = None,
     ) -> MailCategoryResult:
         runtime = runtime_provider.get()

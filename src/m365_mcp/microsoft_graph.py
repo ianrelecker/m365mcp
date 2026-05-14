@@ -93,7 +93,7 @@ CONTACT_EXTENDED_PROPERTIES_EXPAND = (
     "singleValueExtendedProperties($filter=id eq "
     f"'{PERSONAL_HOME_PAGE_EXTENDED_PROPERTY_ID}')"
 )
-CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount"
+CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId"
 MESSAGE_RULE_SELECT = (
     "id,displayName,sequence,isEnabled,hasError,isReadOnly,"
     "conditions,actions,exceptions"
@@ -872,14 +872,17 @@ class MicrosoftGraphClient:
                     "conversationId eq "
                     f"'{self._escape_odata_string(resolved_conversation_id)}'"
                 ),
-                "$orderby": "receivedDateTime",
             }
         )
         result = await self._request(f"{base}/messages?{params}")
+        messages = [
+            self._map_message_summary(message) for message in result["value"]
+        ]
+        messages.sort(key=lambda message: message.receivedDateTime or "")
         return MailThreadResult(
             mailbox=normalized_mailbox or "me",
             conversationId=resolved_conversation_id,
-            messages=[self._map_message_summary(message) for message in result["value"]],
+            messages=messages,
         )
 
     async def create_reply_draft(
@@ -984,12 +987,22 @@ class MicrosoftGraphClient:
         displayName: str | None = None,
         color: str | None = None,
     ) -> MailCategoryResult:
+        if displayName is not None:
+            raise ValueError(
+                "Microsoft Graph does not support renaming existing Outlook "
+                "master categories. Create a new category and delete the old "
+                "one after confirming it is safe to do so."
+            )
+        payload = self._omit_none({"color": color})
+        if not payload:
+            raise ValueError("Provide color to update an Outlook master category.")
+
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         category = await self._request(
             f"{base}/outlook/masterCategories/{quote(categoryId, safe='')}",
             method="PATCH",
-            json_body={"displayName": displayName, "color": color},
+            json_body=payload,
         )
         return MailCategoryResult(
             mailbox=normalized_mailbox or "me",

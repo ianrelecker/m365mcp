@@ -23,9 +23,10 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 - Message summaries include read state, attachment presence, importance, categories, flag status, Focused/Other inference classification, parent folder ID, sender, reply-to, internet message ID, and conversation ID.
 - `inferenceClassification` is a Microsoft Graph message property for Focused Inbox, not a separate app-registration permission.
+- Prefer `mail_check_inbox` or `mail_list` filters for quick triage. `mail_search` delegates to Microsoft Graph `$search`, which can be slower on large mailboxes.
 - Use `mail_mark_read` to mark mail read or unread.
 - Use `mail_set_flag` to set follow-up status.
-- Use category tools to set, add, remove, clear, or manage Outlook categories.
+- Use category tools to set, add, remove, clear, or manage Outlook categories. `mail_update_category` can update a master category color, but Microsoft Graph does not support renaming an existing master category.
 
 ## Sending
 
@@ -51,6 +52,7 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 ## Threads And Replies
 
 - Use `mail_get_thread` with either `messageId` or `conversationId` to inspect a conversation.
+- Thread messages are sorted locally by received time when available to avoid Microsoft Graph's inefficient filtered-sort query path.
 - Use `mail_create_reply_draft` to create reply or reply-all drafts in the thread.
 - Use `mail_send_draft` only after the draft looks correct. Use `mail_send_reply` only when immediate sending is explicit.
 
