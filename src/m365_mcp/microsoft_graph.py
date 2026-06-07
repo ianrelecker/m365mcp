@@ -241,10 +241,11 @@ class MicrosoftGraphClient:
     ) -> MailSearchResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
+        escaped_query = query.replace('"', '\\"')
         params = httpx.QueryParams(
             {
                 "$top": str(min(top, 50)),
-                "$search": f"\"{query.replace('\"', '\\\"')}\"",
+                "$search": f'"{escaped_query}"',
                 "$select": MESSAGE_SUMMARY_SELECT,
             }
         )
