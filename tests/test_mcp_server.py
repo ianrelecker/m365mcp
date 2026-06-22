@@ -20,7 +20,9 @@ from m365_mcp.models import (
     MessageSummary,
     MicrosoftConnectionStatus,
 )
+from m365_mcp.excel_workbook import ExcelWorkbookClient
 from m365_mcp.server import RuntimeServices, _can_bind_localhost, create_mcp_server
+from m365_mcp.sharepoint_files import SharePointFilesClient
 
 
 class StubAuthService:
@@ -100,6 +102,8 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
         config=config_factory(localBaseUrl="http://localhost:8787"),
         microsoft_auth=StubAuthService(),
         graph=graph,
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
         http_client=http_client,
         owns_http_client=False,
         start_helper_server=False,
@@ -160,6 +164,22 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "calendar_create_event",
             "calendar_update_event",
             "calendar_delete_event",
+            "sharepoint_search_items",
+            "sharepoint_search_sites",
+            "sharepoint_get_site",
+            "sharepoint_list_drives",
+            "sharepoint_list_children",
+            "sharepoint_search_in_drive",
+            "sharepoint_get_item_by_url",
+            "workbook_resolve",
+            "workbook_list_worksheets",
+            "workbook_list_tables",
+            "workbook_get_range",
+            "workbook_get_used_range",
+            "workbook_update_range",
+            "workbook_add_table_row",
+            "workbook_create_session",
+            "workbook_close_session",
         }
         tool_by_name = {tool.name: tool for tool in tools.tools}
         mail_list_schema = tool_by_name["mail_list"].inputSchema
@@ -267,6 +287,8 @@ async def test_mcp_server_stays_up_when_helper_port_is_busy(config_factory) -> N
         ),
         microsoft_auth=StubAuthService(),
         graph=StubGraphClient(),
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
         http_client=http_client,
         owns_http_client=False,
         start_helper_server=True,
@@ -297,6 +319,8 @@ async def test_mcp_server_writes_redacted_audit_records(config_factory, tmp_path
         ),
         microsoft_auth=StubAuthService(),
         graph=graph,
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
         http_client=http_client,
         owns_http_client=False,
         start_helper_server=False,
@@ -350,6 +374,8 @@ async def test_mcp_server_skips_audit_file_when_disabled(config_factory, tmp_pat
         ),
         microsoft_auth=StubAuthService(),
         graph=StubGraphClient(),
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
         http_client=http_client,
         owns_http_client=False,
         start_helper_server=False,

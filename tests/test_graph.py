@@ -862,6 +862,7 @@ async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -
 async def test_contacts_crud_search_and_folders() -> None:
     requests: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []
     contact_categories = ["Client"]
+    contact_display_name = ["Ada Lovelace"]
 
     def contact(contact_id: str = "contact-1", name: str = "Ada Lovelace") -> dict[str, object]:
         return {
@@ -931,7 +932,15 @@ async def test_contacts_crud_search_and_folders() -> None:
             assert request.url.params["$expand"] == (
                 "singleValueExtendedProperties($filter=id eq 'String 0x3A50')"
             )
-            return httpx.Response(200, json=contact())
+            return httpx.Response(
+                200, json=contact("contact-1", contact_display_name[0])
+            )
+
+        if request.url.path.endswith("/contacts/contact-new") and request.method == "GET":
+            assert request.url.params["$expand"] == (
+                "singleValueExtendedProperties($filter=id eq 'String 0x3A50')"
+            )
+            return httpx.Response(200, json=contact("contact-new"))
 
         if request.url.path.endswith("/contacts") and request.method == "POST":
             assert body["emailAddresses"] == [
@@ -958,9 +967,10 @@ async def test_contacts_crud_search_and_folders() -> None:
                 assert body["singleValueExtendedProperties"] == [
                     {"id": "String 0x3A50", "value": "https://byron.example"}
                 ]
+                contact_display_name[0] = body["displayName"]
             return httpx.Response(
                 200,
-                json=contact("contact-1", body.get("displayName", "Ada Lovelace")),
+                json=contact("contact-1", contact_display_name[0]),
             )
 
         if request.url.path.endswith("/contacts/contact-1") and request.method == "DELETE":

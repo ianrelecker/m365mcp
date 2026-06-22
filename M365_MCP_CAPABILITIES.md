@@ -75,6 +75,29 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `calendar_update_event` to edit subject, time, attendees, body, or location by event ID.
 - Use `calendar_delete_event` to delete by event ID. Deleting organizer meetings may notify attendees.
 
+## SharePoint And OneDrive Files
+
+- These tools browse files and folders anywhere the signed-in user has access, without mounting anything locally.
+- Use `sharepoint_search_items` first for "find this file or folder anywhere" — it searches across all SharePoint sites and OneDrive.
+- Use `sharepoint_search_sites` then `sharepoint_list_drives` to go from a site name to its document libraries (each library is a "drive").
+- Use `sharepoint_get_site` when you already know the site hostname and path, for example hostname `contoso.sharepoint.com` and sitePath `Acquisitions`.
+- Use `sharepoint_list_children` to browse a folder by `driveId` plus an `itemId` or a path relative to the drive root; filter with `extensions` (e.g. `["xlsx", "pdf"]`) or `foldersOnly`.
+- Use `sharepoint_search_in_drive` to search by name inside one library.
+- Use `sharepoint_get_item_by_url` to turn a SharePoint/OneDrive sharing or browser URL into a `driveId` + `itemId`.
+- The typical flow is: locate a workbook with these tools to get its `driveId` + `itemId`, then hand those to the workbook tools to edit it in place.
+
+## Excel Workbooks
+
+- These tools edit `.xlsx` workbooks stored in OneDrive/SharePoint **in place** via the Microsoft Graph Workbook API, so Excel's own engine applies the change. Formulas, formatting, and data-validation dropdowns are preserved, the file is never re-uploaded, and every change is versioned by SharePoint.
+- Resolve a workbook first with `workbook_resolve` (by shareUrl, `driveId`+`itemId`, or `driveId`+`itemPath`); reuse the returned `driveId` + `itemId` on later calls.
+- Use `workbook_list_worksheets` and `workbook_list_tables` to discover structure before reading or writing.
+- Use `workbook_get_used_range` to find the data extent, and `workbook_get_range` to read a fixed range like `A1:O5`.
+- Use `workbook_update_range` to write `values` and/or `numberFormat` into a fixed range; the shape must match the address dimensions.
+- Use `workbook_add_table_row` to append rows to an Excel table; each row must match the table's column count and order.
+- For date cells, write an Excel serial date number together with a date `numberFormat` (e.g. `mm/dd/yy`) so Excel stores a real date rather than text.
+- For several related edits, open a session with `workbook_create_session` (`persistChanges=true`), pass the `sessionId` to each call, then `workbook_close_session`. Without a session, each write still persists individually.
+- Workbook edits write to the stored file. Confirm the target workbook, worksheet, and range before writing, since changes apply immediately.
+
 ## Safety Notes
 
 - The server acts as the signed-in user and can access shared resources only where that user already has permission.

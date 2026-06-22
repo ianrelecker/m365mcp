@@ -15,6 +15,8 @@ Claude can:
 - List, create, update, and delete Outlook Inbox rules.
 - Search, create, update, and delete contacts.
 - List, create, update, and delete calendar events.
+- Browse SharePoint sites, document libraries, and folders, and find files anywhere you have access.
+- Edit Excel workbooks stored in SharePoint/OneDrive in place: read and write cell ranges and append table rows.
 
 Claude can also read [M365_MCP_CAPABILITIES.md](M365_MCP_CAPABILITIES.md) through the `m365_capabilities` tool or the `m365://capabilities` MCP resource.
 
@@ -77,6 +79,8 @@ Add these delegated Microsoft Graph permissions:
 - `Calendars.ReadWrite.Shared`
 - `Contacts.ReadWrite.Shared`
 - `MailboxSettings.ReadWrite`
+- `Sites.ReadWrite.All`
+- `Files.ReadWrite.All`
 - `openid`
 - `profile`
 - `email`
@@ -312,6 +316,28 @@ Contacts and calendar:
 - `calendar_update_event`
 - `calendar_delete_event`
 
+SharePoint and OneDrive files:
+
+- `sharepoint_search_items`
+- `sharepoint_search_sites`
+- `sharepoint_get_site`
+- `sharepoint_list_drives`
+- `sharepoint_list_children`
+- `sharepoint_search_in_drive`
+- `sharepoint_get_item_by_url`
+
+Excel workbooks:
+
+- `workbook_resolve`
+- `workbook_list_worksheets`
+- `workbook_list_tables`
+- `workbook_get_range`
+- `workbook_get_used_range`
+- `workbook_update_range`
+- `workbook_add_table_row`
+- `workbook_create_session`
+- `workbook_close_session`
+
 ## Contacts
 
 - Use `contacts_search` to resolve recipients before drafting mail.
@@ -327,6 +353,13 @@ Contacts and calendar:
 - Prefer `mail_check_inbox` or `mail_list` filters for fast inbox triage. `mail_search` uses Microsoft Graph `$search`, which can be slower on large mailboxes.
 - `mail_get_thread` sorts returned thread messages locally by received time when available instead of asking Graph to sort a filtered conversation query.
 - `mail_update_category` can update an Outlook master category color. Microsoft Graph does not support renaming an existing master category; create a new category and delete the old one only after confirming that is safe.
+
+## SharePoint And Excel Notes
+
+- The `sharepoint_*` tools are read-only browsing. Start with `sharepoint_search_items` to find a file or folder anywhere you have access, or walk `sharepoint_search_sites` -> `sharepoint_list_drives` -> `sharepoint_list_children`. Each tool returns a `driveId` and `itemId` you can pass on.
+- The `workbook_*` tools edit `.xlsx` files **in place** through the Microsoft Graph Workbook API. Resolve the file once with `workbook_resolve`, then reuse its `driveId` + `itemId`. Edits are applied by Excel server-side, so formulas, formatting, and validation are preserved, and SharePoint versions every change.
+- `workbook_update_range` and `workbook_add_table_row` write directly to the stored file, so confirm the workbook, worksheet, and range before writing.
+- These features need the `Sites.ReadWrite.All` and `Files.ReadWrite.All` delegated permissions. If `auth_status` lists them under `missingScopes`, add them in Azure, grant consent if required, then reconnect Microsoft.
 
 ## Security Notes
 

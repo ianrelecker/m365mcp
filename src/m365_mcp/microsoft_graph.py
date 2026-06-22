@@ -94,6 +94,28 @@ CONTACT_EXTENDED_PROPERTIES_EXPAND = (
     f"'{PERSONAL_HOME_PAGE_EXTENDED_PROPERTY_ID}')"
 )
 CONTACT_FOLDER_SELECT = "id,displayName,parentFolderId"
+
+
+def _build_contact_read_query(*, top: int | None = None) -> str:
+    """Build a query string for contact reads that preserves the literal
+    ``$filter=...`` inside ``$expand`` without URL-encoding.
+
+    Microsoft Graph rejects (or silently ignores) the expand clause when the
+    ``$`` in ``$filter`` is percent-encoded, so we hand-format the query string
+    instead of routing it through ``httpx.QueryParams``. All values here come
+    from server-controlled constants (``CONTACT_SELECT``,
+    ``CONTACT_EXTENDED_PROPERTIES_EXPAND``) or a bounded integer, so there is
+    no user input that needs escaping.
+    """
+
+    parts: list[str] = []
+    if top is not None:
+        parts.append(f"$top={top}")
+    parts.append(f"$select={CONTACT_SELECT}")
+    parts.append(f"$expand={CONTACT_EXTENDED_PROPERTIES_EXPAND}")
+    return "&".join(parts)
+
+
 MESSAGE_RULE_SELECT = (
     "id,displayName,sequence,isEnabled,hasError,isReadOnly,"
     "conditions,actions,exceptions"
@@ -1128,15 +1150,9 @@ class MicrosoftGraphClient:
         top: int = 25,
     ) -> ContactsListResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
-        params = httpx.QueryParams(
-            {
-                "$top": str(min(top, 100)),
-                "$select": CONTACT_SELECT,
-                "$expand": CONTACT_EXTENDED_PROPERTIES_EXPAND,
-            }
-        )
+        query_string = _build_contact_read_query(top=min(top, 100))
         result = await self._request(
-            f"{self._contacts_path(normalized_mailbox, folderId)}?{params}"
+            f"{self._contacts_path(normalized_mailbox, folderId)}?{query_string}"
         )
         return ContactsListResult(
             mailbox=normalized_mailbox or "me",
@@ -1155,24 +1171,24 @@ class MicrosoftGraphClient:
     ) -> ContactsSearchResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         query_text = query.strip()
-        params: dict[str, str] = {
-            "$top": str(min(max(top, 1), 100)),
-            "$select": CONTACT_SELECT,
-            "$expand": CONTACT_EXTENDED_PROPERTIES_EXPAND,
-        }
         if "@" in query_text and " " not in query_text:
-            params["$filter"] = (
+            base_query = _build_contact_read_query(top=min(max(top, 1), 100))
+            email_filter = (
                 "emailAddresses/any(a:a/address eq "
                 f"'{self._escape_odata_string(query_text)}')"
             )
-            result = await self._request(
-                f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams(params)}"
+            email_filter_escaped = quote(email_filter, safe="")
+            url = (
+                f"{self._contacts_path(normalized_mailbox, folderId)}"
+                f"?{base_query}&$filter={email_filter_escaped}"
             )
+            result = await self._request(url)
             contacts = [self._map_contact(contact) for contact in result.get("value", [])]
         else:
             contacts = []
             page_url: str | None = (
-                f"{self._contacts_path(normalized_mailbox, folderId)}?{httpx.QueryParams({'$top': '100', '$select': CONTACT_SELECT, '$expand': CONTACT_EXTENDED_PROPERTIES_EXPAND})}"
+                f"{self._contacts_path(normalized_mailbox, folderId)}"
+                f"?{_build_contact_read_query(top=100)}"
             )
             pages_remaining = max(1, min(maxPages, 10))
             while page_url and pages_remaining > 0 and len(contacts) < top:
@@ -1205,9 +1221,7 @@ class MicrosoftGraphClient:
         path = (
             f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}"
         )
-        contact = await self._request(
-            f"{path}?{httpx.QueryParams({'$select': CONTACT_SELECT, '$expand': CONTACT_EXTENDED_PROPERTIES_EXPAND})}"
-        )
+        contact = await self._request(f"{path}?{_build_contact_read_query()}")
         return ContactGetResult(
             mailbox=normalized_mailbox or "me",
             contact=self._map_contact(contact),
@@ -1234,7 +1248,7 @@ class MicrosoftGraphClient:
         otherAddress: ContactAddress | dict[str, Any] | None = None,
     ) -> ContactMutationResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
-        contact = await self._request(
+        created = await self._request(
             self._contacts_path(normalized_mailbox, folderId),
             method="POST",
             json_body=self._contact_payload(
@@ -1254,6 +1268,17 @@ class MicrosoftGraphClient:
                 otherAddress=otherAddress,
             ),
         )
+        # Re-fetch with $expand so the response surfaces personalHomePage
+        # (stored as an extended property and not returned by POST by default).
+        created_id = created.get("id") if isinstance(created, dict) else None
+        if created_id:
+            refreshed = await self._request(
+                f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(str(created_id), safe='')}"
+                f"?{_build_contact_read_query()}"
+            )
+            contact = refreshed
+        else:
+            contact = created
         return ContactMutationResult(
             mailbox=normalized_mailbox or "me",
             contact=self._map_contact(contact),
@@ -1281,8 +1306,11 @@ class MicrosoftGraphClient:
         otherAddress: ContactAddress | dict[str, Any] | None = None,
     ) -> ContactMutationResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
-        contact = await self._request(
-            f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}",
+        contact_path = (
+            f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}"
+        )
+        await self._request(
+            contact_path,
             method="PATCH",
             json_body=self._contact_payload(
                 displayName=displayName,
@@ -1301,6 +1329,9 @@ class MicrosoftGraphClient:
                 otherAddress=otherAddress,
             ),
         )
+        # Re-fetch with $expand so the response surfaces personalHomePage
+        # (stored as an extended property and not returned by PATCH by default).
+        contact = await self._request(f"{contact_path}?{_build_contact_read_query()}")
         return ContactMutationResult(
             mailbox=normalized_mailbox or "me",
             contact=self._map_contact(contact),
@@ -2260,7 +2291,8 @@ class MicrosoftGraphClient:
         )
 
     def _map_personal_home_page(self, contact: dict[str, Any]) -> str | None:
-        for property_value in contact.get("singleValueExtendedProperties") or []:
+        raw_props = contact.get("singleValueExtendedProperties")
+        for property_value in raw_props or []:
             if not isinstance(property_value, dict):
                 continue
             if property_value.get("id") == PERSONAL_HOME_PAGE_EXTENDED_PROPERTY_ID:

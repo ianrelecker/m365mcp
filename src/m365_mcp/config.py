@@ -107,6 +107,8 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AppConfig:
                 "Calendars.ReadWrite.Shared",
                 "Contacts.ReadWrite.Shared",
                 "MailboxSettings.ReadWrite",
+                "Sites.ReadWrite.All",
+                "Files.ReadWrite.All",
             ],
         ),
         encryptionKey=_parse_encryption_key(source, "TOKEN_ENCRYPTION_KEY"),
