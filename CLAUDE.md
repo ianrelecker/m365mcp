@@ -55,6 +55,8 @@ Two extra Graph clients live alongside `MicrosoftGraphClient`, each self-contain
 
 These need the `Sites.ReadWrite.All` and `Files.ReadWrite.All` scopes (already in the hardcoded list in `config.py` + `tests/conftest.py`). Unlike the mail/contacts/calendar tools, the file/workbook tools take no `mailbox` arg — they operate by `driveId`/`itemId`, so the audit logger records no mailbox for them.
 
+**No SharePoint/OneDrive deletion — intentional and must stay that way.** The `Files.ReadWrite.All` scope *permits* `DELETE` at the Graph level, but no tool exposes it: `sharepoint_*` is read-only and `workbook_*` only writes cell values / appends table rows in place. There must be **no** tool that deletes a SharePoint/OneDrive file or folder (`DELETE /drives/{id}/items/{id}`), removes a drive item, or recursively clears a folder. Deleting files is a manual, human action: if a user asks for one, do not attempt it — explain that deletion requires explicit confirmation and is performed manually outside this server. Do not add a delete tool or a `DELETE` request path here without an explicit, deliberate decision to change this policy.
+
 ## Tests
 
 `tests/` uses pytest + anyio (asyncio backend). `conftest.py` provides a `config_factory` fixture and a `make_jwt` helper. Graph/auth tests stub HTTP by injecting an `httpx.AsyncClient` (or transport) into the services rather than hitting the network — follow that pattern for new tests.
