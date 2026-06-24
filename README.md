@@ -116,6 +116,14 @@ On Windows, if `python3` is not available, try:
 python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
+After filling in `.env`, restrict its permissions so only your user account can read it:
+
+```bash
+chmod 600 .env
+```
+
+On Windows, right-click `.env` → Properties → Security → Advanced and remove access for any account other than your own. `.env` contains plaintext secrets; anyone who can read the file can authenticate as your Microsoft app.
+
 ## 4. Add It To Claude Desktop
 
 Use [claude_desktop_config.json](claude_desktop_config.json) as the starting point. It keeps Claude's default `preferences` block and adds the `m365` MCP server.
@@ -179,18 +187,18 @@ Check my Microsoft auth status with the m365 MCP server.
 
 Claude should start the MCP server and call `auth_status`. The result includes the Microsoft connect URL.
 
-To sign in directly, open:
+To sign in, open the local helper page and click **Connect Microsoft 365**:
 
 ```text
-http://localhost:8787/auth/microsoft/start
+http://localhost:8787/
 ```
 
 Sign in with the Microsoft 365 account Claude should use. After sign-in, tokens are stored locally at `.tokens/microsoft-graph-token.json`, encrypted with `TOKEN_ENCRYPTION_KEY`.
 
-If Claude says it is not authenticated, or `auth_status` shows missing scopes, open the same local auth link again and reconnect:
+If Claude says it is not authenticated, or `auth_status` shows missing scopes, return to the local helper page and click **Connect Microsoft 365** again to reconnect:
 
 ```text
-http://localhost:8787/auth/microsoft/start
+http://localhost:8787/
 ```
 
 If `offline_access` is the only missing scope, reconnecting through the local auth link is still the right fix. It allows Microsoft to issue a refresh token so the local server can keep working after the current access token expires.
@@ -366,9 +374,12 @@ Excel workbooks:
 - `.env`, `.env.local`, and `.tokens/` are local-only files and are ignored by git.
 - `.audit/` is local-only and ignored by git. It stores JSONL tool-call audit records for incident review.
 - `TOKEN_ENCRYPTION_KEY` encrypts the saved Microsoft token cache at rest. If you rotate or lose it, delete `.tokens/microsoft-graph-token.json` and reconnect Microsoft.
+- On macOS and Linux, the token file (`.tokens/microsoft-graph-token.json`) and audit log (`.audit/m365-mcp-audit.jsonl`) are written with `0o600` permissions (owner read/write only) and their parent directories with `0o700`. This is enforced automatically by the server; no manual step is needed.
+- On Windows, token and audit file permissions rely on your user-profile ACLs. Restrict `.env` manually as described in step 3.
 - This server uses a confidential-client `Web` app registration, so `MICROSOFT_CLIENT_SECRET` is required.
 - Microsoft sign-in uses authorization-code flow with PKCE. PKCE hardens the login code exchange, but it does not reduce Microsoft Graph permissions or replace token protection.
-- Audit records include timestamp, tool name, outcome, mailbox, operation category, and key IDs such as message/event/folder/rule IDs when present.
+- The Connect and Disconnect actions on the local helper page (`http://localhost:8787/`) are form POST submissions, not plain links, so they cannot be triggered by a cross-origin web page loaded in your browser while the server is running.
+- Audit records include timestamp, tool name, outcome, mailbox, operation category, and key IDs such as message/event/folder/rule/drive/item IDs when present.
 - Audit records do not include access tokens, refresh tokens, client secrets, encryption keys, email bodies, attachment content, draft body text, calendar body text, or raw Microsoft Graph payloads.
 - Treat `MICROSOFT_CLIENT_SECRET` like any other local credential and do not place it in shared configs or screenshots.
 - This is for local MCP clients, not `claude.ai` remote connectors.

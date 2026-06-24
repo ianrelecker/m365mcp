@@ -105,4 +105,4 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Prefer folder IDs after discovery to avoid accidentally acting on the wrong subfolder.
 - Microsoft sign-in uses PKCE to harden the authorization-code exchange.
 - Local JSONL audit logs are written by default to `.audit/m365-mcp-audit.jsonl`.
-- Audit logs record tool metadata and key IDs only; they do not include tokens, secrets, email bodies, attachment content, or raw Microsoft Graph payloads.
+- Audit logs record tool metadata and key IDs only (message, folder, event, contact, rule, drive, item, and worksheet IDs where present); they do not include tokens, secrets, email bodies, attachment content, cell values, or raw Microsoft Graph payloads.
