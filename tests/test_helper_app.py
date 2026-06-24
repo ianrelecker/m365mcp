@@ -61,7 +61,7 @@ async def test_helper_auth_start_callback_and_disconnect_flow(config_factory) ->
         base_url="http://testserver",
         follow_redirects=False,
     ) as client:
-        start = await client.get("/auth/microsoft/start")
+        start = await client.post("/auth/microsoft/start")
         assert start.status_code == 302
 
         parsed = urlparse(start.headers["location"])
@@ -77,7 +77,7 @@ async def test_helper_auth_start_callback_and_disconnect_flow(config_factory) ->
         health = await client.get("/health")
         assert health.json()["microsoftConnected"] is True
 
-        disconnect = await client.get("/auth/microsoft/disconnect")
+        disconnect = await client.post("/auth/microsoft/disconnect")
         assert disconnect.status_code == 302
 
         final_health = await client.get("/health")

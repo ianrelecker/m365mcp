@@ -46,7 +46,7 @@ def render_home_page(config: AppConfig, status_text: dict[str, object]) -> str:
       main {{ max-width: 56rem; margin: 0 auto; display: grid; gap: 1rem; }}
       section {{ border: 1px solid #d1d5db; border-radius: 0.85rem; padding: 1rem 1.2rem; }}
       code {{ background: #f3f4f6; padding: 0.15rem 0.35rem; border-radius: 0.3rem; }}
-      a.button {{ display: inline-block; padding: 0.75rem 0.95rem; background: #111827; color: #fff; border-radius: 0.6rem; text-decoration: none; margin-right: 0.5rem; }}
+      a.button, button.button {{ display: inline-block; padding: 0.75rem 0.95rem; background: #111827; color: #fff; border-radius: 0.6rem; text-decoration: none; margin-right: 0.5rem; border: none; cursor: pointer; font-size: 1rem; }}
       p, li {{ line-height: 1.5; }}
     </style>
   </head>
@@ -64,8 +64,12 @@ def render_home_page(config: AppConfig, status_text: dict[str, object]) -> str:
         <h2>Microsoft Delegated Auth</h2>
         {connected}
         <p>
-          <a class="button" href="/auth/microsoft/start">Connect Microsoft 365</a>
-          <a class="button" href="/auth/microsoft/disconnect">Disconnect Microsoft 365</a>
+          <form method="post" action="/auth/microsoft/start" style="display:inline">
+            <button type="submit" class="button">Connect Microsoft 365</button>
+          </form>
+          <form method="post" action="/auth/microsoft/disconnect" style="display:inline">
+            <button type="submit" class="button">Disconnect Microsoft 365</button>
+          </form>
         </p>
       </section>
 
@@ -161,8 +165,8 @@ def create_helper_app(config: AppConfig, microsoft_auth: MicrosoftAuthService) -
         routes=[
             Route("/", home),
             Route("/health", health),
-            Route("/auth/microsoft/start", auth_start),
+            Route("/auth/microsoft/start", auth_start, methods=["POST"]),
             Route("/auth/microsoft/callback", auth_callback),
-            Route("/auth/microsoft/disconnect", disconnect),
+            Route("/auth/microsoft/disconnect", disconnect, methods=["POST"]),
         ]
     )

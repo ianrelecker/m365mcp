@@ -256,7 +256,6 @@ class SharePointFilesClient:
     @staticmethod
     def _map_item(data: dict[str, Any], driveId: str | None) -> DriveItemInfo:
         folder = data.get("folder")
-        file = data.get("file") or {}
         name = data.get("name") or ""
         ext = None
         if "." in name and not folder:

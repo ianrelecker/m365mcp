@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,13 +15,16 @@ ID_FIELDS = {
     "conversationId",
     "destinationFolderId",
     "destinationFolderPath",
+    "driveId",
     "eventId",
     "folderId",
     "folderPath",
+    "itemId",
     "messageId",
     "parentFolderId",
     "parentFolderPath",
     "ruleId",
+    "worksheet",
 }
 SENSITIVE_FIELDS = {
     "bcc",
@@ -141,6 +146,19 @@ class LocalAuditLogger:
                 "message": redact_error_message(str(error), arguments),
             }
 
-        self._file_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._file_path.open("a", encoding="utf-8") as audit_file:
+        parent = self._file_path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            try:
+                os.chmod(parent, 0o700)
+            except OSError:
+                pass
+        # O_CREAT with mode 0o600 sets permissions on first creation; on subsequent
+        # opens the existing mode is preserved (which is already 0o600).
+        fd = os.open(
+            str(self._file_path),
+            os.O_CREAT | os.O_WRONLY | os.O_APPEND,
+            0o600,
+        )
+        with os.fdopen(fd, "a", encoding="utf-8") as audit_file:
             audit_file.write(json.dumps(record, sort_keys=True) + "\n")

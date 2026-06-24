@@ -24,7 +24,7 @@ class PendingAuthorization:
 
 
 def _generate_code_verifier() -> str:
-    return secrets.token_urlsafe(64)[:128]
+    return secrets.token_urlsafe(64)
 
 
 def _code_challenge(code_verifier: str) -> str:
