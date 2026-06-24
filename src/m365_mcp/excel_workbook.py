@@ -12,9 +12,15 @@ Design mirrors microsoft_graph.MicrosoftGraphClient: it takes the same
 MicrosoftAuthService and an optional shared httpx.AsyncClient, and exposes a
 small private _request helper with identical error handling.
 
-Required delegated scopes (add to config):
-    Files.ReadWrite.All       # files the user can access, incl. shared
-    Sites.ReadWrite.All       # SharePoint document libraries
+Required delegated scope:
+    Files.ReadWrite.All       # read+write files the user can access, incl.
+                              # workbooks in SharePoint document libraries
+
+This single scope authorizes the in-place edits: workbook calls go through
+/drives/{id}/items/{id}/workbook, not /sites, so no SharePoint *write*
+(Sites.ReadWrite.All) scope is needed. The companion browse client
+(sharepoint_files.py) additionally uses the read-only Sites.Read.All for
+site/drive discovery.
 
 Endpoint reference (Graph v1.0):
     Resolve a shared file:     GET  /shares/{encoded}/driveItem

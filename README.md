@@ -79,7 +79,7 @@ Add these delegated Microsoft Graph permissions:
 - `Calendars.ReadWrite.Shared`
 - `Contacts.ReadWrite.Shared`
 - `MailboxSettings.ReadWrite`
-- `Sites.ReadWrite.All`
+- `Sites.Read.All`
 - `Files.ReadWrite.All`
 - `openid`
 - `profile`
@@ -367,7 +367,8 @@ Excel workbooks:
 - The `sharepoint_*` tools are read-only browsing. Start with `sharepoint_search_items` to find a file or folder anywhere you have access, or walk `sharepoint_search_sites` -> `sharepoint_list_drives` -> `sharepoint_list_children`. Each tool returns a `driveId` and `itemId` you can pass on.
 - The `workbook_*` tools edit `.xlsx` files **in place** through the Microsoft Graph Workbook API. Resolve the file once with `workbook_resolve`, then reuse its `driveId` + `itemId`. Edits are applied by Excel server-side, so formulas, formatting, and validation are preserved, and SharePoint versions every change.
 - `workbook_update_range` and `workbook_add_table_row` write directly to the stored file, so confirm the workbook, worksheet, and range before writing.
-- These features need the `Sites.ReadWrite.All` and `Files.ReadWrite.All` delegated permissions. If `auth_status` lists them under `missingScopes`, add them in Azure, grant consent if required, then reconnect Microsoft.
+- These features need the `Sites.Read.All` and `Files.ReadWrite.All` delegated permissions. `Sites.Read.All` is read-only and only covers browsing SharePoint sites and libraries the signed-in user can already access; the in-place workbook edits are authorized by `Files.ReadWrite.All` (workbook calls go through `/drives`, not `/sites`), so no SharePoint write permission is requested. If `auth_status` lists either under `missingScopes`, add them in Azure, grant consent if required, then reconnect Microsoft.
+- If you previously connected with the broader `Sites.ReadWrite.All`, `auth_status` will report `Sites.Read.All` as missing until you reconnect, because the granted token still carries the old scope. Add `Sites.Read.All` to the Azure app registration and reconnect to refresh it.
 
 ## Security Notes
 

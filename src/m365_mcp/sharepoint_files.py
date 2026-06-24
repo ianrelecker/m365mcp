@@ -9,9 +9,11 @@ Same design as the other clients: shared MicrosoftAuthService + httpx client,
 private _request with identical error handling, typed pydantic results.
 
 Scopes (delegated):
-    Sites.Read.All   +  Files.Read.All        # read-only browse
-  If you already added Sites.ReadWrite.All / Files.ReadWrite.All for the
-  Workbook API, those supersede the read scopes — nothing extra to consent.
+    Sites.Read.All   +  Files.ReadWrite.All
+  This client is read-only and would work with Files.Read.All, but the
+  companion Workbook client (excel_workbook.py) needs Files.ReadWrite.All to
+  edit, so the shared config requests the write file scope and the read-only
+  Sites.Read.All. No SharePoint *write* (Sites.ReadWrite.All) scope is used.
 
 Endpoint reference (Graph v1.0):
     Search sites:        GET  /sites?search={q}
@@ -318,10 +320,15 @@ class SharePointFilesClient:
         json_body: dict[str, Any] | None = None,
     ) -> Any:
         access_token = await self._auth_service.get_access_token()
+        # No Prefer: IdType="ImmutableId" here. That header is an Outlook
+        # (mail/calendar/contacts) feature and is ignored by Graph for
+        # /drives and /sites driveItems. Omitting it keeps the IDs returned by
+        # this browse client identical to the default driveItem IDs the
+        # excel_workbook.py client expects, so a browsed itemId round-trips
+        # cleanly into the workbook tools (verified against live Graph).
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
-            "Prefer": 'IdType="ImmutableId"',
             **({"Content-Type": "application/json"} if json_body is not None else {}),
         }
         url = path if path.startswith("https://") else f"{GRAPH_V1}{path}"
