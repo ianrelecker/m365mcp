@@ -65,6 +65,10 @@ def classify_tool(tool_name: str) -> str:
             "add",
             "remove",
             "mark",
+            "clear",
+            "copy",
+            "insert",
+            "calculate",
         )
     ):
         return "write"

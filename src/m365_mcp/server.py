@@ -19,10 +19,17 @@ from m365_mcp.config import AppConfig, load_config
 from m365_mcp.helper_app import create_helper_app
 from m365_mcp.excel_workbook import (
     ExcelWorkbookClient,
+    WorkbookCalculateResult,
+    WorkbookClearResult,
+    WorkbookCopyResult,
+    WorkbookInsertResult,
     WorkbookItemRef,
     WorkbookListTablesResult,
     WorkbookListWorksheetsResult,
+    WorkbookNameRangeResult,
+    WorkbookNamesResult,
     WorkbookRangeResult,
+    WorkbookRangesResult,
     WorkbookRowAddResult,
     WorkbookSessionResult,
     WorkbookWriteResult,
@@ -1596,7 +1603,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         name="workbook_get_range",
         description=(
             "Read a fixed range like 'A1:O5' from a worksheet. Returns raw "
-            "values and display text."
+            "values, display text, cell formulas, number formats, and the "
+            "resolved address."
         ),
     )
     async def workbook_get_range(
@@ -1639,10 +1647,12 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     @mcp.tool(
         name="workbook_update_range",
         description=(
-            "Write values and/or number formats into a fixed range in place. "
-            "The shape of values/numberFormat must match the address "
-            "dimensions. This edits the stored file via Excel's engine, "
-            "preserving formulas, formatting, and validation."
+            "Write values, formulas, and/or number formats into a fixed range "
+            "in place. The shape of values/formulas/numberFormat must match the "
+            "address dimensions. formulas cells may be literal values or formula "
+            "strings like ='Unit Mix'!H11 (cross-sheet references are fine). "
+            "This edits the stored file via Excel's engine, preserving "
+            "formatting and validation."
         ),
     )
     async def workbook_update_range(
@@ -1651,6 +1661,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         worksheet: str,
         address: str,
         values: list[list[Any]] | None = None,
+        formulas: list[list[Any]] | None = None,
         numberFormat: list[list[Any]] | None = None,
         sessionId: str | None = None,
     ) -> WorkbookWriteResult:
@@ -1660,6 +1671,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             worksheet=worksheet,
             address=address,
             values=values,
+            formulas=formulas,
             numberFormat=numberFormat,
             sessionId=sessionId,
         )
@@ -1724,6 +1736,197 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             sessionId=sessionId,
         )
         return {"closed": True, "sessionId": sessionId}
+
+    @mcp.tool(
+        name="workbook_get_ranges",
+        description=(
+            "Batch-read many ranges in one call. ranges is a list of "
+            "{worksheet, address} objects. Each result carries values, text, "
+            "formulas, numberFormat, and the resolved address, in input order. "
+            "A failed individual range surfaces its error without failing the "
+            "rest. Auto-chunked to <=20 sub-requests per Graph batch."
+        ),
+    )
+    async def workbook_get_ranges(
+        driveId: str,
+        itemId: str,
+        ranges: list[dict[str, str]],
+        sessionId: str | None = None,
+    ) -> WorkbookRangesResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.get_ranges(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            ranges=ranges,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_update_ranges",
+        description=(
+            "Batch-write many ranges in one call. updates is a list of objects, "
+            "each with worksheet and address plus any of formulas, values, "
+            "numberFormat. formulas cells may be literal values or formula "
+            "strings like ='Unit Mix'!H11 (cross-sheet references are written "
+            "verbatim). Results preserve input order; a failed individual write "
+            "surfaces its error without failing the rest. Auto-chunked to <=20 "
+            "sub-requests per Graph batch."
+        ),
+    )
+    async def workbook_update_ranges(
+        driveId: str,
+        itemId: str,
+        updates: list[dict[str, Any]],
+        sessionId: str | None = None,
+    ) -> WorkbookRangesResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.update_ranges(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            updates=updates,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_calculate",
+        description=(
+            "Force a recalculation of the workbook so computed cells are current "
+            "before reading them back. calculationType is one of Recalculate, "
+            "Full (default), or FullRebuild. Pass a sessionId to recalc inside "
+            "an open session."
+        ),
+    )
+    async def workbook_calculate(
+        driveId: str,
+        itemId: str,
+        calculationType: str = "Full",
+        sessionId: str | None = None,
+    ) -> WorkbookCalculateResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.calculate(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            calculationType=calculationType,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_list_names",
+        description=(
+            "List defined names. Workbook-scoped names when worksheet is "
+            "omitted; worksheet-scoped names when worksheet is given. Each name "
+            "includes its 'refers to' value/formula and scope."
+        ),
+    )
+    async def workbook_list_names(
+        driveId: str,
+        itemId: str,
+        worksheet: str | None = None,
+        sessionId: str | None = None,
+    ) -> WorkbookNamesResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.list_names(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_get_name_range",
+        description=(
+            "Resolve a defined name to its range and read it. Returns the "
+            "resolved address plus values, text, formulas, and numberFormat. "
+            "Provide worksheet for a worksheet-scoped name; omit it for a "
+            "workbook-scoped one."
+        ),
+    )
+    async def workbook_get_name_range(
+        driveId: str,
+        itemId: str,
+        name: str,
+        worksheet: str | None = None,
+        sessionId: str | None = None,
+    ) -> WorkbookNameRangeResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.get_name_range(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            name=name,
+            worksheet=worksheet,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_clear_range",
+        description=(
+            "Clear a range in place. applyTo is Contents (values/formulas "
+            "only, default), Formats, or All. This edits the stored file via "
+            "Excel's engine; it never deletes the workbook file."
+        ),
+    )
+    async def workbook_clear_range(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        address: str,
+        applyTo: str = "Contents",
+        sessionId: str | None = None,
+    ) -> WorkbookClearResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.clear_range(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            address=address,
+            applyTo=applyTo,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_copy_range",
+        description=(
+            "Copy into address (the destination range) from sourceRange (e.g. "
+            "'Unit Mix'!A1:B5 for a cross-sheet source). copyType is one of All "
+            "(default), Formulas, Values, or Formats."
+        ),
+    )
+    async def workbook_copy_range(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        address: str,
+        sourceRange: str,
+        copyType: str = "All",
+        sessionId: str | None = None,
+    ) -> WorkbookCopyResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.copy_range(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            address=address,
+            sourceRange=sourceRange,
+            copyType=copyType,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_insert_range",
+        description=(
+            "Insert blank cells at address, shifting existing cells. shift is "
+            "Down (default) or Right. Useful for insert-at-top patterns."
+        ),
+    )
+    async def workbook_insert_range(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        address: str,
+        shift: str = "Down",
+        sessionId: str | None = None,
+    ) -> WorkbookInsertResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.insert_range(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            address=address,
+            shift=shift,
+            sessionId=sessionId,
+        )
 
     return mcp
 

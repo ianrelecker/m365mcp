@@ -33,6 +33,13 @@ Endpoint reference (Graph v1.0):
     Write a range:             PATCH .../worksheets('N')/range(address='A2:O2')
     Used range:                GET  .../worksheets('N')/usedRange
     Create a session:          POST .../createSession  {"persistChanges": true}
+    Batch read/write:          POST /$batch  (<=20 sub-requests/call)
+    Force recalculation:       POST .../application/calculate
+    Defined names:             GET  .../names  |  .../worksheets('N')/names
+    Resolve a name's range:    GET  .../names('Name')/range
+    Clear a range:             POST .../worksheets('N')/range(address)/clear
+    Copy into a range:         POST .../worksheets('N')/range(address)/copyFrom
+    Insert blank cells:        POST .../worksheets('N')/range(address)/insert
 """
 
 from __future__ import annotations
@@ -97,8 +104,86 @@ class WorkbookRangeResult(BaseModel):
     address: str
     values: list[list[Any]] = Field(default_factory=list)
     text: list[list[Any]] | None = None
+    formulas: list[list[Any]] | None = None
+    numberFormat: list[list[Any]] | None = None
     rowCount: int | None = None
     columnCount: int | None = None
+
+
+class WorkbookRangeData(BaseModel):
+    """One range inside a batch read/write result. ``error`` is set (and the
+    data fields left empty) when that individual request failed; the rest of
+    the batch is unaffected."""
+
+    worksheet: str
+    address: str
+    values: list[list[Any]] | None = None
+    text: list[list[Any]] | None = None
+    formulas: list[list[Any]] | None = None
+    numberFormat: list[list[Any]] | None = None
+    updated: bool | None = None
+    error: str | None = None
+
+
+class WorkbookRangesResult(BaseModel):
+    item: WorkbookItemRef
+    ranges: list[WorkbookRangeData] = Field(default_factory=list)
+
+
+class WorkbookCalculateResult(BaseModel):
+    item: WorkbookItemRef
+    calculationType: str
+    calculated: bool = True
+
+
+class WorkbookDefinedName(BaseModel):
+    name: str
+    value: Any | None = None  # the "refers to" formula, e.g. ='Sheet1'!$A$1
+    comment: str | None = None
+    scope: str | None = None  # "Workbook" or a worksheet name
+    type: str | None = None
+    visible: bool | None = None
+
+
+class WorkbookNamesResult(BaseModel):
+    item: WorkbookItemRef
+    worksheet: str | None = None  # set for worksheet-scoped name lists
+    names: list[WorkbookDefinedName] = Field(default_factory=list)
+
+
+class WorkbookNameRangeResult(BaseModel):
+    item: WorkbookItemRef
+    name: str
+    address: str
+    values: list[list[Any]] = Field(default_factory=list)
+    text: list[list[Any]] | None = None
+    formulas: list[list[Any]] | None = None
+    numberFormat: list[list[Any]] | None = None
+
+
+class WorkbookClearResult(BaseModel):
+    item: WorkbookItemRef
+    worksheet: str
+    address: str
+    applyTo: str
+    cleared: bool = True
+
+
+class WorkbookCopyResult(BaseModel):
+    item: WorkbookItemRef
+    worksheet: str
+    address: str
+    sourceRange: str
+    copyType: str
+    copied: bool = True
+
+
+class WorkbookInsertResult(BaseModel):
+    item: WorkbookItemRef
+    worksheet: str
+    address: str
+    shift: str
+    inserted: bool = True
 
 
 class WorkbookRowAddResult(BaseModel):
@@ -275,11 +360,12 @@ class ExcelWorkbookClient:
         address: str,
         sessionId: str | None = None,
     ) -> WorkbookRangeResult:
-        """Read a range like 'A1:O5'. Returns both raw values and display text."""
+        """Read a range like 'A1:O5'. Returns raw values, display text, the
+        cell formulas, and number formats."""
         data = await self._request(
             f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')"
-            "?$select=address,values,text,rowCount,columnCount",
+            "?$select=address,values,text,formulas,numberFormat,rowCount,columnCount",
             sessionId=sessionId,
         )
         return WorkbookRangeResult(
@@ -288,6 +374,8 @@ class ExcelWorkbookClient:
             address=data.get("address", address),
             values=data.get("values", []),
             text=data.get("text"),
+            formulas=data.get("formulas"),
+            numberFormat=data.get("numberFormat"),
             rowCount=data.get("rowCount"),
             columnCount=data.get("columnCount"),
         )
@@ -304,7 +392,7 @@ class ExcelWorkbookClient:
         data = await self._request(
             f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/usedRange{suffix}"
-            "?$select=address,values,text,rowCount,columnCount",
+            "?$select=address,values,text,formulas,numberFormat,rowCount,columnCount",
             sessionId=sessionId,
         )
         return WorkbookRangeResult(
@@ -313,6 +401,8 @@ class ExcelWorkbookClient:
             address=data.get("address", ""),
             values=data.get("values", []),
             text=data.get("text"),
+            formulas=data.get("formulas"),
+            numberFormat=data.get("numberFormat"),
             rowCount=data.get("rowCount"),
             columnCount=data.get("columnCount"),
         )
@@ -324,18 +414,23 @@ class ExcelWorkbookClient:
         worksheet: str,
         address: str,
         values: list[list[Any]] | None = None,
+        formulas: list[list[Any]] | None = None,
         numberFormat: list[list[Any]] | None = None,
         sessionId: str | None = None,
     ) -> WorkbookWriteResult:
-        """Write values and/or number formats into a fixed range. The shape of
-        ``values``/``numberFormat`` must match the address dimensions."""
+        """Write values, formulas, and/or number formats into a fixed range.
+        The shape of ``values``/``formulas``/``numberFormat`` must match the
+        address dimensions. ``formulas`` cells may be literal values or formula
+        strings (e.g. ``='Unit Mix'!H11``); cross-sheet references are fine."""
         body: dict[str, Any] = {}
         if values is not None:
             body["values"] = values
+        if formulas is not None:
+            body["formulas"] = formulas
         if numberFormat is not None:
             body["numberFormat"] = numberFormat
         if not body:
-            raise ValueError("Provide values and/or numberFormat to update")
+            raise ValueError("Provide values, formulas, and/or numberFormat to update")
         await self._request(
             f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')",
@@ -374,6 +469,276 @@ class ExcelWorkbookClient:
             sessionId=sessionId,
         )
 
+    # ---- batch read / write ---------------------------------------------- #
+    async def get_ranges(
+        self,
+        item: WorkbookItemRef,
+        *,
+        ranges: list[dict[str, str]],
+        sessionId: str | None = None,
+    ) -> WorkbookRangesResult:
+        """Read many ranges in one shot via Graph ``$batch``.
+
+        ``ranges`` is a list of ``{"worksheet": ..., "address": ...}`` dicts.
+        Each result carries values, text, formulas, and numberFormat. Results
+        preserve input order; a failed individual range surfaces its ``error``
+        without failing the rest of the batch. Auto-chunked to <=20 requests
+        per batch call."""
+        specs = [self._range_spec(r, i) for i, r in enumerate(ranges)]
+        requests = [
+            {
+                "id": str(i),
+                "method": "GET",
+                "url": (
+                    f"{self._wb_base(item)}/worksheets('{self._q(ws)}')"
+                    f"/range(address='{self._q(addr)}')"
+                    "?$select=address,values,formulas,text,numberFormat"
+                ),
+            }
+            for i, (ws, addr) in enumerate(specs)
+        ]
+        responses = await self._batch(requests, sessionId=sessionId)
+        out: list[WorkbookRangeData] = []
+        for i, (ws, addr) in enumerate(specs):
+            resp = responses.get(str(i))
+            out.append(self._read_range_response(ws, addr, resp))
+        return WorkbookRangesResult(item=item, ranges=out)
+
+    async def update_ranges(
+        self,
+        item: WorkbookItemRef,
+        *,
+        updates: list[dict[str, Any]],
+        sessionId: str | None = None,
+    ) -> WorkbookRangesResult:
+        """Write many ranges in one shot via Graph ``$batch`` of PATCH requests.
+
+        ``updates`` is a list of dicts, each with ``worksheet`` and ``address``
+        plus any of ``formulas``, ``values``, ``numberFormat``. ``formulas``
+        cells may be literal values or formula strings (cross-sheet references
+        like ``='Unit Mix'!H11`` are written verbatim). Results preserve input
+        order; a failed individual write surfaces its ``error`` without failing
+        the rest of the batch. Auto-chunked to <=20 requests per batch call."""
+        prepared: list[tuple[str, str, dict[str, Any]]] = []
+        for i, upd in enumerate(updates):
+            ws = upd.get("worksheet")
+            addr = upd.get("address")
+            if not ws or not addr:
+                raise ValueError(
+                    f"updates[{i}] must include worksheet and address"
+                )
+            body: dict[str, Any] = {}
+            for key in ("formulas", "values", "numberFormat"):
+                if upd.get(key) is not None:
+                    body[key] = upd[key]
+            if not body:
+                raise ValueError(
+                    f"updates[{i}] must include formulas, values, "
+                    "and/or numberFormat"
+                )
+            prepared.append((ws, addr, body))
+        requests = [
+            {
+                "id": str(i),
+                "method": "PATCH",
+                "url": (
+                    f"{self._wb_base(item)}/worksheets('{self._q(ws)}')"
+                    f"/range(address='{self._q(addr)}')"
+                ),
+                "body": body,
+            }
+            for i, (ws, addr, body) in enumerate(prepared)
+        ]
+        responses = await self._batch(requests, sessionId=sessionId)
+        out: list[WorkbookRangeData] = []
+        for i, (ws, addr, _body) in enumerate(prepared):
+            resp = responses.get(str(i))
+            error = self._batch_error(resp)
+            out.append(
+                WorkbookRangeData(
+                    worksheet=ws,
+                    address=addr,
+                    updated=error is None,
+                    error=error,
+                )
+            )
+        return WorkbookRangesResult(item=item, ranges=out)
+
+    async def calculate(
+        self,
+        item: WorkbookItemRef,
+        *,
+        calculationType: str = "Full",
+        sessionId: str | None = None,
+    ) -> WorkbookCalculateResult:
+        """Force a recalculation of the workbook so computed cells are current
+        before reading them back. ``calculationType`` is one of ``Recalculate``,
+        ``Full``, or ``FullRebuild``."""
+        allowed = {"Recalculate", "Full", "FullRebuild"}
+        if calculationType not in allowed:
+            raise ValueError(
+                f"calculationType must be one of {sorted(allowed)}"
+            )
+        await self._request(
+            f"{self._wb_base(item)}/application/calculate",
+            method="POST",
+            json_body={"calculationType": calculationType},
+            sessionId=sessionId,
+        )
+        return WorkbookCalculateResult(
+            item=item, calculationType=calculationType
+        )
+
+    # ---- defined names ---------------------------------------------------- #
+    async def list_names(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str | None = None,
+        sessionId: str | None = None,
+    ) -> WorkbookNamesResult:
+        """List defined names. Workbook-scoped names when ``worksheet`` is
+        omitted; worksheet-scoped names when it is given."""
+        if worksheet:
+            path = (
+                f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')/names"
+            )
+        else:
+            path = f"{self._wb_base(item)}/names"
+        data = await self._request(
+            f"{path}?$select=name,value,comment,scope,type,visible",
+            sessionId=sessionId,
+        )
+        return WorkbookNamesResult(
+            item=item,
+            worksheet=worksheet,
+            names=[
+                WorkbookDefinedName(
+                    name=n["name"],
+                    value=n.get("value"),
+                    comment=n.get("comment"),
+                    scope=n.get("scope"),
+                    type=n.get("type"),
+                    visible=n.get("visible"),
+                )
+                for n in data.get("value", [])
+            ],
+        )
+
+    async def get_name_range(
+        self,
+        item: WorkbookItemRef,
+        *,
+        name: str,
+        worksheet: str | None = None,
+        sessionId: str | None = None,
+    ) -> WorkbookNameRangeResult:
+        """Resolve a defined name to its range and read it. Provide
+        ``worksheet`` for a worksheet-scoped name; omit it for a workbook-scoped
+        one."""
+        if worksheet:
+            base = (
+                f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+                f"/names('{self._q(name)}')/range"
+            )
+        else:
+            base = f"{self._wb_base(item)}/names('{self._q(name)}')/range"
+        data = await self._request(
+            f"{base}?$select=address,values,text,formulas,numberFormat",
+            sessionId=sessionId,
+        )
+        return WorkbookNameRangeResult(
+            item=item,
+            name=name,
+            address=data.get("address", ""),
+            values=data.get("values", []),
+            text=data.get("text"),
+            formulas=data.get("formulas"),
+            numberFormat=data.get("numberFormat"),
+        )
+
+    # ---- range operations ------------------------------------------------- #
+    async def clear_range(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        address: str,
+        applyTo: str = "Contents",
+        sessionId: str | None = None,
+    ) -> WorkbookClearResult:
+        """Clear a range. ``applyTo`` is ``Contents`` (values/formulas only),
+        ``Formats``, or ``All``."""
+        allowed = {"Contents", "Formats", "All"}
+        if applyTo not in allowed:
+            raise ValueError(f"applyTo must be one of {sorted(allowed)}")
+        await self._request(
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"/range(address='{self._q(address)}')/clear",
+            method="POST",
+            json_body={"applyTo": applyTo},
+            sessionId=sessionId,
+        )
+        return WorkbookClearResult(
+            item=item, worksheet=worksheet, address=address, applyTo=applyTo
+        )
+
+    async def copy_range(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        address: str,
+        sourceRange: str,
+        copyType: str = "All",
+        sessionId: str | None = None,
+    ) -> WorkbookCopyResult:
+        """Copy into ``address`` (the destination) from ``sourceRange`` (e.g.
+        ``'Unit Mix'!A1:B5`` for a cross-sheet source). ``copyType`` is one of
+        ``All``, ``Formulas``, ``Values``, or ``Formats``."""
+        allowed = {"All", "Formulas", "Values", "Formats"}
+        if copyType not in allowed:
+            raise ValueError(f"copyType must be one of {sorted(allowed)}")
+        await self._request(
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"/range(address='{self._q(address)}')/copyFrom",
+            method="POST",
+            json_body={"sourceRange": sourceRange, "copyType": copyType},
+            sessionId=sessionId,
+        )
+        return WorkbookCopyResult(
+            item=item,
+            worksheet=worksheet,
+            address=address,
+            sourceRange=sourceRange,
+            copyType=copyType,
+        )
+
+    async def insert_range(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        address: str,
+        shift: str = "Down",
+        sessionId: str | None = None,
+    ) -> WorkbookInsertResult:
+        """Insert blank cells at ``address``, shifting existing cells. ``shift``
+        is ``Down`` or ``Right``."""
+        allowed = {"Down", "Right"}
+        if shift not in allowed:
+            raise ValueError(f"shift must be one of {sorted(allowed)}")
+        await self._request(
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"/range(address='{self._q(address)}')/insert",
+            method="POST",
+            json_body={"shift": shift},
+            sessionId=sessionId,
+        )
+        return WorkbookInsertResult(
+            item=item, worksheet=worksheet, address=address, shift=shift
+        )
+
     # ---- helpers ---------------------------------------------------------- #
     @staticmethod
     def excel_serial_date(value: date | datetime | str) -> int:
@@ -405,6 +770,88 @@ class ExcelWorkbookClient:
             f"/drives/{quote(item.driveId, safe='')}"
             f"/items/{quote(item.itemId, safe='')}/workbook"
         )
+
+    @staticmethod
+    def _range_spec(spec: dict[str, str], index: int) -> tuple[str, str]:
+        ws = spec.get("worksheet")
+        addr = spec.get("address")
+        if not ws or not addr:
+            raise ValueError(
+                f"ranges[{index}] must include worksheet and address"
+            )
+        return ws, addr
+
+    @staticmethod
+    def _read_range_response(
+        worksheet: str, address: str, resp: dict[str, Any] | None
+    ) -> WorkbookRangeData:
+        error = ExcelWorkbookClient._batch_error(resp)
+        if error is not None or resp is None:
+            return WorkbookRangeData(
+                worksheet=worksheet, address=address, error=error
+            )
+        body = resp.get("body") or {}
+        return WorkbookRangeData(
+            worksheet=worksheet,
+            address=body.get("address", address),
+            values=body.get("values"),
+            text=body.get("text"),
+            formulas=body.get("formulas"),
+            numberFormat=body.get("numberFormat"),
+        )
+
+    @staticmethod
+    def _batch_error(resp: dict[str, Any] | None) -> str | None:
+        """Return an error string for a failed inner $batch response, else
+        None. A missing response (request id dropped from the batch) is an
+        error too."""
+        if resp is None:
+            return "no response returned for this request"
+        status = resp.get("status")
+        if isinstance(status, int) and 200 <= status < 300:
+            return None
+        detail = ExcelWorkbookClient._error_detail(resp.get("body"))
+        return f"{status}: {detail}" if detail else f"HTTP {status}"
+
+    @staticmethod
+    def _chunked(items: list[Any], size: int) -> list[list[Any]]:
+        return [items[i : i + size] for i in range(0, len(items), size)]
+
+    async def _batch(
+        self,
+        requests: list[dict[str, Any]],
+        *,
+        sessionId: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Send Graph ``POST /$batch`` requests, auto-chunked to <=20 per call.
+
+        Each entry in ``requests`` is ``{"id", "method", "url", "body"?,
+        "headers"?}`` with ``url`` relative to ``/v1.0``. The workbook session
+        header is attached to every inner request when ``sessionId`` is given.
+        Returns a dict keyed by request id -> raw inner response, aggregated
+        across chunks so the caller can reassemble in input order."""
+        responses: dict[str, dict[str, Any]] = {}
+        for chunk in self._chunked(requests, 20):
+            payload: dict[str, Any] = {"requests": []}
+            for req in chunk:
+                entry: dict[str, Any] = {
+                    "id": req["id"],
+                    "method": req["method"],
+                    "url": req["url"],
+                }
+                headers = dict(req.get("headers") or {})
+                if req.get("body") is not None:
+                    entry["body"] = req["body"]
+                    headers.setdefault("Content-Type", "application/json")
+                if sessionId:
+                    headers["workbook-session-id"] = sessionId
+                if headers:
+                    entry["headers"] = headers
+                payload["requests"].append(entry)
+            data = await self._request("/$batch", method="POST", json_body=payload)
+            for resp in (data or {}).get("responses", []):
+                responses[str(resp.get("id"))] = resp
+        return responses
 
     @asynccontextmanager
     async def _client(self) -> Any:
