@@ -42,8 +42,6 @@ from pathlib import Path
 import httpx
 import pytest
 
-from m365_mcp.excel_workbook import WorkbookItemRef
-
 pytestmark = pytest.mark.anyio
 
 _DRIVE_ID = os.environ.get("M365_PILOT_DRIVE_ID")
