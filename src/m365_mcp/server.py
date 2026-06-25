@@ -22,6 +22,7 @@ from m365_mcp.excel_workbook import (
     WorkbookCalculateResult,
     WorkbookClearResult,
     WorkbookCopyResult,
+    WorkbookDeleteResult,
     WorkbookInsertResult,
     WorkbookItemRef,
     WorkbookListTablesResult,
@@ -1921,6 +1922,34 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     ) -> WorkbookInsertResult:
         runtime = runtime_provider.get()
         return await runtime.excel.insert_range(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            address=address,
+            shift=shift,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_delete_range",
+        description=(
+            "Delete the cells at address and shift remaining cells to fill the "
+            "gap. shift is Up (default) or Left. To delete a whole row, pass a "
+            "full-row address (e.g. 5:5 or A5:Z5) with shift=Up. This removes "
+            "cells inside the worksheet via Excel's engine and shifts data — "
+            "unlike workbook_clear_range, which only blanks cells in place. It "
+            "edits the stored file; it never deletes the workbook file itself."
+        ),
+    )
+    async def workbook_delete_range(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        address: str,
+        shift: str = "Up",
+        sessionId: str | None = None,
+    ) -> WorkbookDeleteResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.delete_range(
             WorkbookItemRef(driveId=driveId, itemId=itemId),
             worksheet=worksheet,
             address=address,

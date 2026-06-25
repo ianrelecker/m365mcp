@@ -186,6 +186,14 @@ class WorkbookInsertResult(BaseModel):
     inserted: bool = True
 
 
+class WorkbookDeleteResult(BaseModel):
+    item: WorkbookItemRef
+    worksheet: str
+    address: str
+    shift: str
+    deleted: bool = True
+
+
 class WorkbookRowAddResult(BaseModel):
     item: WorkbookItemRef
     table: str
@@ -736,6 +744,35 @@ class ExcelWorkbookClient:
             sessionId=sessionId,
         )
         return WorkbookInsertResult(
+            item=item, worksheet=worksheet, address=address, shift=shift
+        )
+
+    async def delete_range(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        address: str,
+        shift: str = "Up",
+        sessionId: str | None = None,
+    ) -> WorkbookDeleteResult:
+        """Delete the cells at ``address`` and shift remaining cells to fill the
+        gap. ``shift`` is ``Up`` (default) or ``Left``. Use a full-row address
+        (e.g. ``5:5`` or ``A5:Z5``) with ``shift='Up'`` to delete a row. This
+        edits cells inside the worksheet via Excel's engine; it never deletes
+        the workbook file. To merely blank cells in place without shifting,
+        use ``clear_range`` instead."""
+        allowed = {"Up", "Left"}
+        if shift not in allowed:
+            raise ValueError(f"shift must be one of {sorted(allowed)}")
+        await self._request(
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"/range(address='{self._q(address)}')/delete",
+            method="POST",
+            json_body={"shift": shift},
+            sessionId=sessionId,
+        )
+        return WorkbookDeleteResult(
             item=item, worksheet=worksheet, address=address, shift=shift
         )
 

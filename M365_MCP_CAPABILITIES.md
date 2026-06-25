@@ -105,6 +105,7 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `workbook_list_names` (workbook-scoped, or worksheet-scoped when `worksheet` is given) and `workbook_get_name_range` to read defined names and resolve a name to its address + values/formulas.
 - Use `workbook_clear_range` (`applyTo` = `Contents` | `Formats` | `All`) to clear cells, and `workbook_copy_range` (`copyType` = `All` | `Formulas` | `Values` | `Formats`, with a possibly cross-sheet `sourceRange`) to copy.
 - Use `workbook_insert_range` (`shift` = `Down` | `Right`) to insert blank cells (e.g. insert-at-top trackers).
+- Use `workbook_delete_range` (`shift` = `Up` | `Left`) to delete cells and shift remaining cells to close the gap. To delete a whole row, pass a full-row address (e.g. `5:5` or `A5:Z5`) with `shift=Up`. This differs from `workbook_clear_range`, which only blanks cells in place without shifting. Neither deletes the workbook file itself.
 - Use `workbook_list_worksheets` to enumerate the tabs in a workbook. (Adding, copying, renaming, and deleting worksheets are not supported — these tools operate on cell ranges and tables in existing sheets.)
 - Every range result includes its resolved `address`. Pass `sessionId` to any of these tools to run them inside an open session.
 

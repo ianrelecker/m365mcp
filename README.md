@@ -341,8 +341,17 @@ Excel workbooks:
 - `workbook_list_tables`
 - `workbook_get_range`
 - `workbook_get_used_range`
+- `workbook_get_ranges`
 - `workbook_update_range`
+- `workbook_update_ranges`
 - `workbook_add_table_row`
+- `workbook_clear_range`
+- `workbook_copy_range`
+- `workbook_insert_range`
+- `workbook_delete_range`
+- `workbook_calculate`
+- `workbook_list_names`
+- `workbook_get_name_range`
 - `workbook_create_session`
 - `workbook_close_session`
 

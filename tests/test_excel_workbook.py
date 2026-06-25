@@ -217,6 +217,38 @@ async def test_add_table_row_posts_values_and_index() -> None:
 
 
 @pytest.mark.anyio
+async def test_delete_range_posts_shift_and_escapes_address() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        url = str(request.url)
+        assert "worksheets('Sheet1')" in url
+        assert "range(address='5:5')/delete" in url
+        assert json.loads(request.content) == {"shift": "Up"}
+        return httpx.Response(200, json={})
+
+    client, http_client = _make_client(handler)
+    result = await client.delete_range(
+        _item(), worksheet="Sheet1", address="5:5", shift="Up"
+    )
+    assert result.deleted is True
+    assert result.shift == "Up"
+    assert result.address == "5:5"
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_delete_range_rejects_invalid_shift() -> None:
+    client, http_client = _make_client(
+        lambda request: httpx.Response(500)
+    )
+    with pytest.raises(ValueError):
+        await client.delete_range(
+            _item(), worksheet="Sheet1", address="A1", shift="Down"
+        )
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
 async def test_session_header_is_sent_when_session_id_present() -> None:
     seen: dict[str, str | None] = {}
 
