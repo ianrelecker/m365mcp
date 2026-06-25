@@ -136,5 +136,61 @@ async def test_refresh_token_flow_does_not_send_code_verifier(config_factory) ->
     assert "code_verifier" in form_bodies[0]
     assert form_bodies[1]["grant_type"] == ["refresh_token"]
     assert "code_verifier" not in form_bodies[1]
+    # Refresh must NOT request a scope set. Sending the current config scopes
+    # would break refresh once that list grows beyond what this token was
+    # granted (Azure rejects a superset). Omitting it reissues the granted scopes.
+    assert "scope" not in form_bodies[1]
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_refresh_succeeds_when_config_scopes_exceed_granted(config_factory) -> None:
+    # Simulates a token minted before new scopes were added to the config list.
+    # Because refresh omits "scope", Azure is free to reissue only the granted
+    # scopes and the refresh succeeds instead of failing with invalid_grant.
+    form_bodies: list[dict[str, list[str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode("utf-8"))
+        form_bodies.append(form)
+        if form["grant_type"] == ["authorization_code"]:
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "initial-token",
+                    "refresh_token": "refresh-token",
+                    "expires_in": 0,
+                    # Only a narrow subset was originally granted.
+                    "scope": "openid offline_access Mail.ReadWrite",
+                    "id_token": make_jwt({"preferred_username": "user@example.com"}),
+                },
+            )
+
+        # If a superset scope were sent, real Azure would reject it; the test
+        # transport instead asserts no scope is present and returns success.
+        assert "scope" not in form
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "refreshed-token",
+                "expires_in": 3600,
+                "scope": "openid offline_access Mail.ReadWrite",
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    auth = MicrosoftAuthService(config_factory(), client)
+    state = parse_qs(urlparse(auth.build_authorization_url()).query)["state"][0]
+
+    await auth.handle_authorization_code_callback(
+        code="auth-code",
+        state=state,
+        error=None,
+        errorDescription=None,
+    )
+
+    token = await auth.get_access_token()
+    assert token == "refreshed-token"
 
     await client.aclose()
