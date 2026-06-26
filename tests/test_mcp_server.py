@@ -189,6 +189,13 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "workbook_copy_range",
             "workbook_insert_range",
             "workbook_delete_range",
+            "workbook_create_table",
+            "workbook_sort_table",
+            "workbook_filter_table",
+            "workbook_clear_table_filters",
+            "workbook_format_range",
+            "workbook_set_column_width",
+            "workbook_set_row_height",
         }
         tool_by_name = {tool.name: tool for tool in tools.tools}
         mail_list_schema = tool_by_name["mail_list"].inputSchema

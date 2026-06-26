@@ -40,6 +40,12 @@ Endpoint reference (Graph v1.0):
     Clear a range:             POST .../worksheets('N')/range(address)/clear
     Copy into a range:         POST .../worksheets('N')/range(address)/copyFrom
     Insert blank cells:        POST .../worksheets('N')/range(address)/insert
+    Create a table:            POST .../worksheets('N')/tables/add
+    Sort a table:              POST .../tables/{idOrName}/sort/apply
+    Filter a table column:     POST .../tables/{idOrName}/columns('Col')/filter/apply
+    Clear table filters:       POST .../tables/{idOrName}/clearFilters
+    Format a range:            PATCH .../range(address)/format{,/font,/fill,/borders('Edge')}
+    Autofit columns/rows:      POST .../range(address)/format/autofit{Columns,Rows}
 """
 
 from __future__ import annotations
@@ -192,6 +198,45 @@ class WorkbookDeleteResult(BaseModel):
     address: str
     shift: str
     deleted: bool = True
+
+
+class WorkbookTableCreateResult(BaseModel):
+    item: WorkbookItemRef
+    table: WorkbookTable
+
+
+class WorkbookTableSortResult(BaseModel):
+    item: WorkbookItemRef
+    table: str
+    sorted: bool = True
+
+
+class WorkbookTableFilterResult(BaseModel):
+    item: WorkbookItemRef
+    table: str
+    column: str
+    filtered: bool = True
+
+
+class WorkbookTableClearFiltersResult(BaseModel):
+    item: WorkbookItemRef
+    table: str
+    cleared: bool = True
+
+
+class WorkbookFormatResult(BaseModel):
+    item: WorkbookItemRef
+    worksheet: str
+    address: str
+    formatted: bool = True
+
+
+class WorkbookDimensionResult(BaseModel):
+    item: WorkbookItemRef
+    worksheet: str
+    address: str
+    autofit: bool = False
+    applied: bool = True
 
 
 class WorkbookRowAddResult(BaseModel):
@@ -774,6 +819,263 @@ class ExcelWorkbookClient:
         )
         return WorkbookDeleteResult(
             item=item, worksheet=worksheet, address=address, shift=shift
+        )
+
+    # ---- tables (structure) ---------------------------------------------- #
+    async def create_table(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        address: str,
+        hasHeaders: bool = True,
+        sessionId: str | None = None,
+    ) -> WorkbookTableCreateResult:
+        """Create an Excel table over an existing range (a.k.a. convert a range
+        to a table). ``address`` is a range on ``worksheet`` like ``A1:D20``;
+        ``hasHeaders=True`` treats the first row as column headers. Returns the
+        created table's id and name for use with the other table tools."""
+        data = await self._request(
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')/tables/add",
+            method="POST",
+            json_body={"address": address, "hasHeaders": hasHeaders},
+            sessionId=sessionId,
+        )
+        return WorkbookTableCreateResult(
+            item=item,
+            table=WorkbookTable(
+                id=data["id"],
+                name=data["name"],
+                showHeaders=data.get("showHeaders"),
+                worksheet=worksheet,
+            ),
+        )
+
+    async def sort_table(
+        self,
+        item: WorkbookItemRef,
+        *,
+        table: str,
+        fields: list[dict[str, Any]],
+        matchCase: bool = False,
+        sessionId: str | None = None,
+    ) -> WorkbookTableSortResult:
+        """Sort a table by one or more columns. ``fields`` is a list of sort
+        conditions, each ``{"key": <zero-based column index in the table>,
+        "ascending": true|false}`` (an optional ``"sortOn"`` may be ``Value``,
+        ``CellColor``, ``FontColor``, or ``Icon``). Earlier fields take
+        priority. ``matchCase`` makes text comparison case-sensitive."""
+        if not fields:
+            raise ValueError(
+                "Provide at least one sort field, e.g. {'key': 0, 'ascending': True}."
+            )
+        await self._request(
+            f"{self._wb_base(item)}/tables/{self._q(table)}/sort/apply",
+            method="POST",
+            json_body={"fields": fields, "matchCase": matchCase},
+            sessionId=sessionId,
+        )
+        return WorkbookTableSortResult(item=item, table=table)
+
+    async def filter_table(
+        self,
+        item: WorkbookItemRef,
+        *,
+        table: str,
+        column: str,
+        criteria: dict[str, Any],
+        sessionId: str | None = None,
+    ) -> WorkbookTableFilterResult:
+        """Apply a filter to one table column. ``column`` is the column's header
+        name. ``criteria`` is a Graph filter-criteria object, e.g.
+        ``{"filterOn": "values", "values": ["A", "B"]}`` to keep matching rows,
+        or ``{"filterOn": "custom", "criterion1": ">100", "operator": "And"}``.
+        Use ``clear_table_filters`` to remove filters afterwards."""
+        await self._request(
+            f"{self._wb_base(item)}/tables/{self._q(table)}"
+            f"/columns('{self._q(column)}')/filter/apply",
+            method="POST",
+            json_body={"criteria": criteria},
+            sessionId=sessionId,
+        )
+        return WorkbookTableFilterResult(item=item, table=table, column=column)
+
+    async def clear_table_filters(
+        self,
+        item: WorkbookItemRef,
+        *,
+        table: str,
+        sessionId: str | None = None,
+    ) -> WorkbookTableClearFiltersResult:
+        """Clear all column filters on a table, restoring every row to view."""
+        await self._request(
+            f"{self._wb_base(item)}/tables/{self._q(table)}/clearFilters",
+            method="POST",
+            sessionId=sessionId,
+        )
+        return WorkbookTableClearFiltersResult(item=item, table=table)
+
+    # ---- formatting ------------------------------------------------------ #
+    async def format_range(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        address: str,
+        fillColor: str | None = None,
+        fontBold: bool | None = None,
+        fontItalic: bool | None = None,
+        fontUnderline: str | None = None,
+        fontColor: str | None = None,
+        fontSize: float | None = None,
+        fontName: str | None = None,
+        horizontalAlignment: str | None = None,
+        verticalAlignment: str | None = None,
+        wrapText: bool | None = None,
+        borderStyle: str | None = None,
+        borderColor: str | None = None,
+        borderEdges: list[str] | None = None,
+        sessionId: str | None = None,
+    ) -> WorkbookFormatResult:
+        """Apply visual formatting to a range. Colors are hex strings like
+        ``#FFFF00``. ``fontUnderline`` is ``None``/``Single``/``Double``.
+        ``horizontalAlignment`` is ``General``/``Left``/``Center``/``Right`` (etc.)
+        and ``verticalAlignment`` is ``Top``/``Center``/``Bottom``. Setting
+        ``borderStyle`` (e.g. ``Continuous``) draws borders on ``borderEdges``
+        (default the four outer edges: ``EdgeTop``/``EdgeBottom``/``EdgeLeft``/
+        ``EdgeRight``; inside edges are ``InsideVertical``/``InsideHorizontal``).
+        Number formats are set via ``update_range``. Issues one Graph PATCH per
+        sub-property changed; at least one property must be provided."""
+        base = (
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"/range(address='{self._q(address)}')/format"
+        )
+        did_any = False
+
+        font_body: dict[str, Any] = {}
+        if fontBold is not None:
+            font_body["bold"] = fontBold
+        if fontItalic is not None:
+            font_body["italic"] = fontItalic
+        if fontUnderline is not None:
+            font_body["underline"] = fontUnderline
+        if fontColor is not None:
+            font_body["color"] = fontColor
+        if fontSize is not None:
+            font_body["size"] = fontSize
+        if fontName is not None:
+            font_body["name"] = fontName
+        if font_body:
+            await self._request(
+                f"{base}/font", method="PATCH", json_body=font_body,
+                sessionId=sessionId,
+            )
+            did_any = True
+
+        if fillColor is not None:
+            await self._request(
+                f"{base}/fill", method="PATCH",
+                json_body={"color": fillColor}, sessionId=sessionId,
+            )
+            did_any = True
+
+        fmt_body: dict[str, Any] = {}
+        if horizontalAlignment is not None:
+            fmt_body["horizontalAlignment"] = horizontalAlignment
+        if verticalAlignment is not None:
+            fmt_body["verticalAlignment"] = verticalAlignment
+        if wrapText is not None:
+            fmt_body["wrapText"] = wrapText
+        if fmt_body:
+            await self._request(
+                base, method="PATCH", json_body=fmt_body, sessionId=sessionId
+            )
+            did_any = True
+
+        if borderStyle is not None:
+            edges = borderEdges or [
+                "EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight"
+            ]
+            border_body: dict[str, Any] = {"style": borderStyle}
+            if borderColor is not None:
+                border_body["color"] = borderColor
+            for edge in edges:
+                await self._request(
+                    f"{base}/borders('{self._q(edge)}')",
+                    method="PATCH", json_body=border_body, sessionId=sessionId,
+                )
+            did_any = True
+
+        if not did_any:
+            raise ValueError(
+                "Provide at least one formatting property to apply."
+            )
+        return WorkbookFormatResult(
+            item=item, worksheet=worksheet, address=address
+        )
+
+    async def set_column_width(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        columns: str,
+        width: float | None = None,
+        autofit: bool = False,
+        sessionId: str | None = None,
+    ) -> WorkbookDimensionResult:
+        """Set the width of one or more columns, addressed like ``A:A`` or
+        ``A:C``. Pass ``width`` (in points) to set a fixed width, or
+        ``autofit=True`` to size columns to their content."""
+        base = (
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"/range(address='{self._q(columns)}')/format"
+        )
+        if autofit:
+            await self._request(
+                f"{base}/autofitColumns", method="POST", sessionId=sessionId
+            )
+        elif width is not None:
+            await self._request(
+                base, method="PATCH",
+                json_body={"columnWidth": width}, sessionId=sessionId,
+            )
+        else:
+            raise ValueError("Provide width, or set autofit=True.")
+        return WorkbookDimensionResult(
+            item=item, worksheet=worksheet, address=columns, autofit=autofit
+        )
+
+    async def set_row_height(
+        self,
+        item: WorkbookItemRef,
+        *,
+        worksheet: str,
+        rows: str,
+        height: float | None = None,
+        autofit: bool = False,
+        sessionId: str | None = None,
+    ) -> WorkbookDimensionResult:
+        """Set the height of one or more rows, addressed like ``1:1`` or
+        ``1:10``. Pass ``height`` (in points) to set a fixed height, or
+        ``autofit=True`` to size rows to their content."""
+        base = (
+            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"/range(address='{self._q(rows)}')/format"
+        )
+        if autofit:
+            await self._request(
+                f"{base}/autofitRows", method="POST", sessionId=sessionId
+            )
+        elif height is not None:
+            await self._request(
+                base, method="PATCH",
+                json_body={"rowHeight": height}, sessionId=sessionId,
+            )
+        else:
+            raise ValueError("Provide height, or set autofit=True.")
+        return WorkbookDimensionResult(
+            item=item, worksheet=worksheet, address=rows, autofit=autofit
         )
 
     # ---- helpers ---------------------------------------------------------- #

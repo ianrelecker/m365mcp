@@ -249,6 +249,190 @@ async def test_delete_range_rejects_invalid_shift() -> None:
 
 
 @pytest.mark.anyio
+async def test_create_table_posts_address_and_headers() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert "worksheets('Sheet1')/tables/add" in str(request.url)
+        assert json.loads(request.content) == {
+            "address": "A1:C5",
+            "hasHeaders": True,
+        }
+        return httpx.Response(
+            200, json={"id": "t9", "name": "Table9", "showHeaders": True}
+        )
+
+    client, http_client = _make_client(handler)
+    result = await client.create_table(
+        _item(), worksheet="Sheet1", address="A1:C5"
+    )
+    assert result.table.id == "t9"
+    assert result.table.name == "Table9"
+    assert result.table.worksheet == "Sheet1"
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_sort_table_posts_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path.endswith("/tables/Table1/sort/apply")
+        body = json.loads(request.content)
+        assert body["fields"] == [{"key": 1, "ascending": False}]
+        assert body["matchCase"] is False
+        return httpx.Response(204)
+
+    client, http_client = _make_client(handler)
+    result = await client.sort_table(
+        _item(), table="Table1", fields=[{"key": 1, "ascending": False}]
+    )
+    assert result.sorted is True
+    assert result.table == "Table1"
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_sort_table_requires_fields() -> None:
+    client, http_client = _make_client(lambda request: httpx.Response(500))
+    with pytest.raises(ValueError):
+        await client.sort_table(_item(), table="Table1", fields=[])
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_filter_table_posts_criteria_and_escapes_column() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        # The space is percent-encoded in the URL; assert on the decoded path.
+        assert (
+            "/tables/Table1/columns('Bob''s Col')/filter/apply"
+            in request.url.path
+        )
+        assert json.loads(request.content) == {
+            "criteria": {"filterOn": "values", "values": ["x"]}
+        }
+        return httpx.Response(204)
+
+    client, http_client = _make_client(handler)
+    result = await client.filter_table(
+        _item(),
+        table="Table1",
+        column="Bob's Col",
+        criteria={"filterOn": "values", "values": ["x"]},
+    )
+    assert result.filtered is True
+    assert result.column == "Bob's Col"
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_clear_table_filters_posts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path.endswith("/tables/Table1/clearFilters")
+        return httpx.Response(204)
+
+    client, http_client = _make_client(handler)
+    result = await client.clear_table_filters(_item(), table="Table1")
+    assert result.cleared is True
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_format_range_patches_font_fill_alignment_and_borders() -> None:
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PATCH"
+        # Record the format sub-path and body for each PATCH issued.
+        suffix = str(request.url).split("/format", 1)[1]
+        seen.append((suffix, json.loads(request.content)))
+        return httpx.Response(200, json={})
+
+    client, http_client = _make_client(handler)
+    result = await client.format_range(
+        _item(),
+        worksheet="Sheet1",
+        address="A1:B2",
+        fillColor="#FFFF00",
+        fontBold=True,
+        fontColor="#FF0000",
+        horizontalAlignment="Center",
+        wrapText=True,
+        borderStyle="Continuous",
+        borderColor="#000000",
+        borderEdges=["EdgeTop", "EdgeBottom"],
+    )
+    assert result.formatted is True
+    paths = [p for p, _ in seen]
+    assert "/font" in paths
+    assert "/fill" in paths
+    assert "" in paths  # the format-level PATCH (alignment/wrap)
+    assert paths.count("/borders('EdgeTop')") == 1
+    assert paths.count("/borders('EdgeBottom')") == 1
+    bodies = dict(seen)
+    assert bodies["/font"] == {"bold": True, "color": "#FF0000"}
+    assert bodies["/fill"] == {"color": "#FFFF00"}
+    assert bodies[""] == {"horizontalAlignment": "Center", "wrapText": True}
+    assert bodies["/borders('EdgeTop')"] == {
+        "style": "Continuous",
+        "color": "#000000",
+    }
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_format_range_requires_a_property() -> None:
+    client, http_client = _make_client(lambda request: httpx.Response(500))
+    with pytest.raises(ValueError):
+        await client.format_range(_item(), worksheet="Sheet1", address="A1")
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_set_column_width_patches_width() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PATCH"
+        url = str(request.url)
+        assert "range(address='A:C')/format" in url
+        assert json.loads(request.content) == {"columnWidth": 80.0}
+        return httpx.Response(200, json={})
+
+    client, http_client = _make_client(handler)
+    result = await client.set_column_width(
+        _item(), worksheet="Sheet1", columns="A:C", width=80.0
+    )
+    assert result.applied is True
+    assert result.autofit is False
+    assert result.address == "A:C"
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_set_row_height_autofit_posts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url).endswith("/format/autofitRows")
+        return httpx.Response(200, json={})
+
+    client, http_client = _make_client(handler)
+    result = await client.set_row_height(
+        _item(), worksheet="Sheet1", rows="1:10", autofit=True
+    )
+    assert result.autofit is True
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_set_column_width_requires_width_or_autofit() -> None:
+    client, http_client = _make_client(lambda request: httpx.Response(500))
+    with pytest.raises(ValueError):
+        await client.set_column_width(
+            _item(), worksheet="Sheet1", columns="A:A"
+        )
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
 async def test_session_header_is_sent_when_session_id_present() -> None:
     seen: dict[str, str | None] = {}
 

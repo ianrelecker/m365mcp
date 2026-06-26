@@ -23,6 +23,8 @@ from m365_mcp.excel_workbook import (
     WorkbookClearResult,
     WorkbookCopyResult,
     WorkbookDeleteResult,
+    WorkbookDimensionResult,
+    WorkbookFormatResult,
     WorkbookInsertResult,
     WorkbookItemRef,
     WorkbookListTablesResult,
@@ -33,6 +35,10 @@ from m365_mcp.excel_workbook import (
     WorkbookRangesResult,
     WorkbookRowAddResult,
     WorkbookSessionResult,
+    WorkbookTableClearFiltersResult,
+    WorkbookTableCreateResult,
+    WorkbookTableFilterResult,
+    WorkbookTableSortResult,
     WorkbookWriteResult,
 )
 from m365_mcp.microsoft_auth import MicrosoftAuthService
@@ -1954,6 +1960,214 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             worksheet=worksheet,
             address=address,
             shift=shift,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_create_table",
+        description=(
+            "Create an Excel table over an existing range (convert a range to a "
+            "table). address is a range on the worksheet like A1:D20; "
+            "hasHeaders=True (default) treats the first row as column headers. "
+            "Returns the new table's id and name for use with the other table "
+            "tools."
+        ),
+    )
+    async def workbook_create_table(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        address: str,
+        hasHeaders: bool = True,
+        sessionId: str | None = None,
+    ) -> WorkbookTableCreateResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.create_table(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            address=address,
+            hasHeaders=hasHeaders,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_sort_table",
+        description=(
+            "Sort an Excel table by one or more columns. fields is a list of "
+            "sort conditions, each {key: <zero-based column index in the table>, "
+            "ascending: true|false} (an optional sortOn may be Value, CellColor, "
+            "FontColor, or Icon). Earlier fields take priority. matchCase makes "
+            "text comparison case-sensitive."
+        ),
+    )
+    async def workbook_sort_table(
+        driveId: str,
+        itemId: str,
+        table: str,
+        fields: list[dict[str, Any]],
+        matchCase: bool = False,
+        sessionId: str | None = None,
+    ) -> WorkbookTableSortResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.sort_table(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            table=table,
+            fields=fields,
+            matchCase=matchCase,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_filter_table",
+        description=(
+            "Apply a filter to one column of an Excel table. column is the "
+            "column's header name. criteria is a Graph filter-criteria object, "
+            "e.g. {filterOn: 'values', values: ['A','B']} to keep matching rows, "
+            "or {filterOn: 'custom', criterion1: '>100', operator: 'And'}. Use "
+            "workbook_clear_table_filters to remove filters afterwards."
+        ),
+    )
+    async def workbook_filter_table(
+        driveId: str,
+        itemId: str,
+        table: str,
+        column: str,
+        criteria: dict[str, Any],
+        sessionId: str | None = None,
+    ) -> WorkbookTableFilterResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.filter_table(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            table=table,
+            column=column,
+            criteria=criteria,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_clear_table_filters",
+        description=(
+            "Clear all column filters on an Excel table, restoring every row to "
+            "view."
+        ),
+    )
+    async def workbook_clear_table_filters(
+        driveId: str,
+        itemId: str,
+        table: str,
+        sessionId: str | None = None,
+    ) -> WorkbookTableClearFiltersResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.clear_table_filters(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            table=table,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_format_range",
+        description=(
+            "Apply visual formatting to a range in place: fill color, font "
+            "(bold/italic/underline/color/size/name), alignment (horizontal/"
+            "vertical/wrapText), and borders. Colors are hex strings like "
+            "#FFFF00. Setting borderStyle (e.g. Continuous) draws borders on "
+            "borderEdges (default the four outer edges; inside edges are "
+            "InsideVertical/InsideHorizontal). Number formats are set via "
+            "workbook_update_range. At least one property must be provided."
+        ),
+    )
+    async def workbook_format_range(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        address: str,
+        fillColor: str | None = None,
+        fontBold: bool | None = None,
+        fontItalic: bool | None = None,
+        fontUnderline: str | None = None,
+        fontColor: str | None = None,
+        fontSize: float | None = None,
+        fontName: str | None = None,
+        horizontalAlignment: str | None = None,
+        verticalAlignment: str | None = None,
+        wrapText: bool | None = None,
+        borderStyle: str | None = None,
+        borderColor: str | None = None,
+        borderEdges: list[str] | None = None,
+        sessionId: str | None = None,
+    ) -> WorkbookFormatResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.format_range(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            address=address,
+            fillColor=fillColor,
+            fontBold=fontBold,
+            fontItalic=fontItalic,
+            fontUnderline=fontUnderline,
+            fontColor=fontColor,
+            fontSize=fontSize,
+            fontName=fontName,
+            horizontalAlignment=horizontalAlignment,
+            verticalAlignment=verticalAlignment,
+            wrapText=wrapText,
+            borderStyle=borderStyle,
+            borderColor=borderColor,
+            borderEdges=borderEdges,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_set_column_width",
+        description=(
+            "Set the width of one or more columns, addressed like A:A or A:C. "
+            "Pass width (in points) for a fixed width, or autofit=True to size "
+            "columns to their content."
+        ),
+    )
+    async def workbook_set_column_width(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        columns: str,
+        width: float | None = None,
+        autofit: bool = False,
+        sessionId: str | None = None,
+    ) -> WorkbookDimensionResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.set_column_width(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            columns=columns,
+            width=width,
+            autofit=autofit,
+            sessionId=sessionId,
+        )
+
+    @mcp.tool(
+        name="workbook_set_row_height",
+        description=(
+            "Set the height of one or more rows, addressed like 1:1 or 1:10. "
+            "Pass height (in points) for a fixed height, or autofit=True to size "
+            "rows to their content."
+        ),
+    )
+    async def workbook_set_row_height(
+        driveId: str,
+        itemId: str,
+        worksheet: str,
+        rows: str,
+        height: float | None = None,
+        autofit: bool = False,
+        sessionId: str | None = None,
+    ) -> WorkbookDimensionResult:
+        runtime = runtime_provider.get()
+        return await runtime.excel.set_row_height(
+            WorkbookItemRef(driveId=driveId, itemId=itemId),
+            worksheet=worksheet,
+            rows=rows,
+            height=height,
+            autofit=autofit,
             sessionId=sessionId,
         )
 
