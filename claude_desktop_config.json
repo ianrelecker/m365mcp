@@ -6,10 +6,10 @@
   },
   "mcpServers": {
     "m365": {
-      "command": "uv",
+      "command": "C:\\Users\\pchauychoo\\.local\\bin\\uv.exe",
       "args": [
         "--directory",
-        "C:\\Users\\YOUR_WINDOWS_USER\\Documents\\m365mcp",
+        "C:\\Users\\pchauychoo\\Cowork\\mcp-servers\\m365mcp",
         "run",
         "--env-file",
         ".env",

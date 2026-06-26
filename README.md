@@ -15,6 +15,8 @@ Claude can:
 - List, create, update, and delete Outlook Inbox rules.
 - Search, create, update, and delete contacts.
 - List, create, update, and delete calendar events.
+- Browse SharePoint sites, document libraries, and folders, and find files anywhere you have access.
+- Edit Excel workbooks stored in SharePoint/OneDrive in place: read and write cell ranges and append table rows.
 
 Claude can also read [M365_MCP_CAPABILITIES.md](M365_MCP_CAPABILITIES.md) through the `m365_capabilities` tool or the `m365://capabilities` MCP resource.
 
@@ -77,6 +79,8 @@ Add these delegated Microsoft Graph permissions:
 - `Calendars.ReadWrite.Shared`
 - `Contacts.ReadWrite.Shared`
 - `MailboxSettings.ReadWrite`
+- `Sites.Read.All`
+- `Files.ReadWrite.All`
 - `openid`
 - `profile`
 - `email`
@@ -111,6 +115,14 @@ On Windows, if `python3` is not available, try:
 ```powershell
 python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
 ```
+
+After filling in `.env`, restrict its permissions so only your user account can read it:
+
+```bash
+chmod 600 .env
+```
+
+On Windows, right-click `.env` → Properties → Security → Advanced and remove access for any account other than your own. `.env` contains plaintext secrets; anyone who can read the file can authenticate as your Microsoft app.
 
 ## 4. Add It To Claude Desktop
 
@@ -175,18 +187,18 @@ Check my Microsoft auth status with the m365 MCP server.
 
 Claude should start the MCP server and call `auth_status`. The result includes the Microsoft connect URL.
 
-To sign in directly, open:
+To sign in, open the local helper page and click **Connect Microsoft 365**:
 
 ```text
-http://localhost:8787/auth/microsoft/start
+http://localhost:8787/
 ```
 
 Sign in with the Microsoft 365 account Claude should use. After sign-in, tokens are stored locally at `.tokens/microsoft-graph-token.json`, encrypted with `TOKEN_ENCRYPTION_KEY`.
 
-If Claude says it is not authenticated, or `auth_status` shows missing scopes, open the same local auth link again and reconnect:
+If Claude says it is not authenticated, or `auth_status` shows missing scopes, return to the local helper page and click **Connect Microsoft 365** again to reconnect:
 
 ```text
-http://localhost:8787/auth/microsoft/start
+http://localhost:8787/
 ```
 
 If `offline_access` is the only missing scope, reconnecting through the local auth link is still the right fix. It allows Microsoft to issue a refresh token so the local server can keep working after the current access token expires.
@@ -312,6 +324,37 @@ Contacts and calendar:
 - `calendar_update_event`
 - `calendar_delete_event`
 
+SharePoint and OneDrive files:
+
+- `sharepoint_search_items`
+- `sharepoint_search_sites`
+- `sharepoint_get_site`
+- `sharepoint_list_drives`
+- `sharepoint_list_children`
+- `sharepoint_search_in_drive`
+- `sharepoint_get_item_by_url`
+
+Excel workbooks:
+
+- `workbook_resolve`
+- `workbook_list_worksheets`
+- `workbook_list_tables`
+- `workbook_get_range`
+- `workbook_get_used_range`
+- `workbook_get_ranges`
+- `workbook_update_range`
+- `workbook_update_ranges`
+- `workbook_add_table_row`
+- `workbook_clear_range`
+- `workbook_copy_range`
+- `workbook_insert_range`
+- `workbook_delete_range`
+- `workbook_calculate`
+- `workbook_list_names`
+- `workbook_get_name_range`
+- `workbook_create_session`
+- `workbook_close_session`
+
 ## Contacts
 
 - Use `contacts_search` to resolve recipients before drafting mail.
@@ -328,14 +371,25 @@ Contacts and calendar:
 - `mail_get_thread` sorts returned thread messages locally by received time when available instead of asking Graph to sort a filtered conversation query.
 - `mail_update_category` can update an Outlook master category color. Microsoft Graph does not support renaming an existing master category; create a new category and delete the old one only after confirming that is safe.
 
+## SharePoint And Excel Notes
+
+- The `sharepoint_*` tools are read-only browsing. Start with `sharepoint_search_items` to find a file or folder anywhere you have access, or walk `sharepoint_search_sites` -> `sharepoint_list_drives` -> `sharepoint_list_children`. Each tool returns a `driveId` and `itemId` you can pass on.
+- The `workbook_*` tools edit `.xlsx` files **in place** through the Microsoft Graph Workbook API. Resolve the file once with `workbook_resolve`, then reuse its `driveId` + `itemId`. Edits are applied by Excel server-side, so formulas, formatting, and validation are preserved, and SharePoint versions every change.
+- `workbook_update_range` and `workbook_add_table_row` write directly to the stored file, so confirm the workbook, worksheet, and range before writing.
+- These features need the `Sites.Read.All` and `Files.ReadWrite.All` delegated permissions. `Sites.Read.All` is read-only and only covers browsing SharePoint sites and libraries the signed-in user can already access; the in-place workbook edits are authorized by `Files.ReadWrite.All` (workbook calls go through `/drives`, not `/sites`), so no SharePoint write permission is requested. If `auth_status` lists either under `missingScopes`, add them in Azure, grant consent if required, then reconnect Microsoft.
+- If you previously connected with the broader `Sites.ReadWrite.All`, `auth_status` will report `Sites.Read.All` as missing until you reconnect, because the granted token still carries the old scope. Add `Sites.Read.All` to the Azure app registration and reconnect to refresh it.
+
 ## Security Notes
 
 - `.env`, `.env.local`, and `.tokens/` are local-only files and are ignored by git.
 - `.audit/` is local-only and ignored by git. It stores JSONL tool-call audit records for incident review.
 - `TOKEN_ENCRYPTION_KEY` encrypts the saved Microsoft token cache at rest. If you rotate or lose it, delete `.tokens/microsoft-graph-token.json` and reconnect Microsoft.
+- On macOS and Linux, the token file (`.tokens/microsoft-graph-token.json`) and audit log (`.audit/m365-mcp-audit.jsonl`) are written with `0o600` permissions (owner read/write only) and their parent directories with `0o700`. This is enforced automatically by the server; no manual step is needed.
+- On Windows, token and audit file permissions rely on your user-profile ACLs. Restrict `.env` manually as described in step 3.
 - This server uses a confidential-client `Web` app registration, so `MICROSOFT_CLIENT_SECRET` is required.
 - Microsoft sign-in uses authorization-code flow with PKCE. PKCE hardens the login code exchange, but it does not reduce Microsoft Graph permissions or replace token protection.
-- Audit records include timestamp, tool name, outcome, mailbox, operation category, and key IDs such as message/event/folder/rule IDs when present.
+- The Connect and Disconnect actions on the local helper page (`http://localhost:8787/`) are form POST submissions, not plain links, so they cannot be triggered by a cross-origin web page loaded in your browser while the server is running.
+- Audit records include timestamp, tool name, outcome, mailbox, operation category, and key IDs such as message/event/folder/rule/drive/item IDs when present.
 - Audit records do not include access tokens, refresh tokens, client secrets, encryption keys, email bodies, attachment content, draft body text, calendar body text, or raw Microsoft Graph payloads.
 - Treat `MICROSOFT_CLIENT_SECRET` like any other local credential and do not place it in shared configs or screenshots.
 - This is for local MCP clients, not `claude.ai` remote connectors.

@@ -107,6 +107,12 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AppConfig:
                 "Calendars.ReadWrite.Shared",
                 "Contacts.ReadWrite.Shared",
                 "MailboxSettings.ReadWrite",
+                # Sites.Read.All (not ReadWrite): the SharePoint tools only
+                # browse sites/drives read-only. Workbook edits go through
+                # /drives/{id}/items/{id}/workbook, which is governed by
+                # Files.ReadWrite.All, so no SharePoint *write* scope is needed.
+                "Sites.Read.All",
+                "Files.ReadWrite.All",
             ],
         ),
         encryptionKey=_parse_encryption_key(source, "TOKEN_ENCRYPTION_KEY"),

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +29,37 @@ class EncryptedFileStore:
         return decrypted
 
     async def save(self, value: Any) -> None:
-        self._file_path.parent.mkdir(parents=True, exist_ok=True)
+        parent = self._file_path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            # Restrict the directory so only the owner can list/enter it.
+            # Windows relies on user-profile ACLs instead.
+            try:
+                os.chmod(parent, 0o700)
+            except OSError:
+                pass
+
         encrypted = encrypt_json(value, self._encryption_key)
-        self._file_path.write_text(
-            json.dumps(encrypted.model_dump(mode="json"), indent=2),
-            encoding="utf-8",
-        )
+        content = json.dumps(encrypted.model_dump(mode="json"), indent=2)
+
+        # Atomic write: write to a sibling temp file then rename so the token
+        # file is never left in a truncated state on a crash or interrupt.
+        fd, tmp_path = tempfile.mkstemp(dir=str(parent), text=True)
+        try:
+            if sys.platform != "win32":
+                os.chmod(tmp_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            fd = -1  # fdopen took ownership; don't double-close
+            os.replace(tmp_path, str(self._file_path))
+        except Exception:
+            if fd != -1:
+                os.close(fd)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     async def clear(self) -> None:
         try:

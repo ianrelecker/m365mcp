@@ -75,6 +75,40 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `calendar_update_event` to edit subject, time, attendees, body, or location by event ID.
 - Use `calendar_delete_event` to delete by event ID. Deleting organizer meetings may notify attendees.
 
+## SharePoint And OneDrive Files
+
+- These tools browse files and folders anywhere the signed-in user has access, without mounting anything locally.
+- Use `sharepoint_search_items` first for "find this file or folder anywhere" — it searches across all SharePoint sites and OneDrive.
+- Use `sharepoint_search_sites` then `sharepoint_list_drives` to go from a site name to its document libraries (each library is a "drive").
+- Use `sharepoint_get_site` when you already know the site hostname and path, for example hostname `contoso.sharepoint.com` and sitePath `Acquisitions`.
+- Use `sharepoint_list_children` to browse a folder by `driveId` plus an `itemId` or a path relative to the drive root; filter with `extensions` (e.g. `["xlsx", "pdf"]`) or `foldersOnly`.
+- Use `sharepoint_search_in_drive` to search by name inside one library.
+- Use `sharepoint_get_item_by_url` to turn a SharePoint/OneDrive sharing or browser URL into a `driveId` + `itemId`.
+- The typical flow is: locate a workbook with these tools to get its `driveId` + `itemId`, then hand those to the workbook tools to edit it in place.
+
+## Excel Workbooks
+
+- These tools edit `.xlsx` workbooks stored in OneDrive/SharePoint **in place** via the Microsoft Graph Workbook API, so Excel's own engine applies the change. Formulas, formatting, and data-validation dropdowns are preserved, the file is never re-uploaded, and every change is versioned by SharePoint.
+- Resolve a workbook first with `workbook_resolve` (by shareUrl, `driveId`+`itemId`, or `driveId`+`itemPath`); reuse the returned `driveId` + `itemId` on later calls.
+- Use `workbook_list_worksheets` and `workbook_list_tables` to discover structure before reading or writing.
+- Use `workbook_get_used_range` to find the data extent, and `workbook_get_range` to read a fixed range like `A1:O5`. Range reads return `values`, display `text`, the cell `formulas`, `numberFormat`, and the resolved `address`.
+- Use `workbook_update_range` to write `values`, `formulas`, and/or `numberFormat` into a fixed range; the shape must match the address dimensions. `formulas` cells may be literal values or formula strings like `='Unit Mix'!H11` (cross-sheet references are fine).
+- Use `workbook_add_table_row` to append rows to an Excel table; each row must match the table's column count and order.
+- For date cells, write an Excel serial date number together with a date `numberFormat` (e.g. `mm/dd/yy`) so Excel stores a real date rather than text.
+- For several related edits, open a session with `workbook_create_session` (`persistChanges=true`), pass the `sessionId` to each call, then `workbook_close_session`. Without a session, each write still persists individually.
+- Workbook edits write to the stored file. Confirm the target workbook, worksheet, and range before writing, since changes apply immediately.
+
+### Batch read/write, recalc, and the match/fill flow
+
+- Use `workbook_get_ranges` (input: a list of `{worksheet, address}`) and `workbook_update_ranges` (input: a list of `{worksheet, address, formulas?, values?, numberFormat?}`) to read or write many scattered cells in one call. Both bundle Graph `$batch` sub-requests, auto-chunk to ≤20 per batch, preserve input order, and surface a per-range `error` without failing the whole batch.
+- Use `workbook_calculate` (`calculationType` = `Recalculate` | `Full` | `FullRebuild`) to force a recalculation before reading computed cells back. The intended flow inside one `persistChanges=true` session is: read inputs → `workbook_update_ranges` (write mapped formulas) → `workbook_calculate` → `workbook_get_ranges` (read computed outputs, including dynamic-array spill cells).
+- Use `workbook_list_names` (workbook-scoped, or worksheet-scoped when `worksheet` is given) and `workbook_get_name_range` to read defined names and resolve a name to its address + values/formulas.
+- Use `workbook_clear_range` (`applyTo` = `Contents` | `Formats` | `All`) to clear cells, and `workbook_copy_range` (`copyType` = `All` | `Formulas` | `Values` | `Formats`, with a possibly cross-sheet `sourceRange`) to copy.
+- Use `workbook_insert_range` (`shift` = `Down` | `Right`) to insert blank cells (e.g. insert-at-top trackers).
+- Use `workbook_delete_range` (`shift` = `Up` | `Left`) to delete cells and shift remaining cells to close the gap. To delete a whole row, pass a full-row address (e.g. `5:5` or `A5:Z5`) with `shift=Up`. This differs from `workbook_clear_range`, which only blanks cells in place without shifting. Neither deletes the workbook file itself.
+- Use `workbook_list_worksheets` to enumerate the tabs in a workbook. (Adding, copying, renaming, and deleting worksheets are not supported — these tools operate on cell ranges and tables in existing sheets.)
+- Every range result includes its resolved `address`. Pass `sessionId` to any of these tools to run them inside an open session.
+
 ## Safety Notes
 
 - The server acts as the signed-in user and can access shared resources only where that user already has permission.
@@ -82,4 +116,4 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Prefer folder IDs after discovery to avoid accidentally acting on the wrong subfolder.
 - Microsoft sign-in uses PKCE to harden the authorization-code exchange.
 - Local JSONL audit logs are written by default to `.audit/m365-mcp-audit.jsonl`.
-- Audit logs record tool metadata and key IDs only; they do not include tokens, secrets, email bodies, attachment content, or raw Microsoft Graph payloads.
+- Audit logs record tool metadata and key IDs only (message, folder, event, contact, rule, drive, item, and worksheet IDs where present); they do not include tokens, secrets, email bodies, attachment content, cell values, or raw Microsoft Graph payloads.

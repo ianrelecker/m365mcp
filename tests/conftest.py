@@ -73,6 +73,8 @@ def config_factory(
                         "Calendars.ReadWrite.Shared",
                         "Contacts.ReadWrite.Shared",
                         "MailboxSettings.ReadWrite",
+                        "Sites.Read.All",
+                        "Files.ReadWrite.All",
                     ],
                 )
             ),

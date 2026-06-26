@@ -24,7 +24,7 @@ class PendingAuthorization:
 
 
 def _generate_code_verifier() -> str:
-    return secrets.token_urlsafe(64)[:128]
+    return secrets.token_urlsafe(64)
 
 
 def _code_challenge(code_verifier: str) -> str:
@@ -148,11 +148,16 @@ class MicrosoftAuthService:
         if tokens.expiresAt > int(time.time() * 1000) + 60_000:
             return tokens.accessToken
 
+        # Deliberately omit "scope" on refresh. A refresh_token grant can only
+        # return scopes that were already consented; requesting the current
+        # config scope list would break refresh whenever that list grows beyond
+        # what this token was granted (Azure rejects a superset with
+        # invalid_grant / AADSTS65001). Omitting it tells Azure to reissue the
+        # originally-granted scopes, so refresh survives scope changes.
         refreshed = await self._fetch_token(
             {
                 "grant_type": "refresh_token",
                 "refresh_token": tokens.refreshToken,
-                "scope": " ".join(self._config.microsoft.scopes),
             }
         )
 
