@@ -109,6 +109,14 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `workbook_list_worksheets` to enumerate the tabs in a workbook. (Adding, copying, renaming, and deleting worksheets are not supported — these tools operate on cell ranges and tables in existing sheets.)
 - Every range result includes its resolved `address`. Pass `sessionId` to any of these tools to run them inside an open session.
 
+### Tables and formatting
+
+- Use `workbook_create_table` (`worksheet`, `address` like `A1:D20`, `hasHeaders` default true) to turn an existing range into an Excel table; it returns the new table's id and name. Then `workbook_add_table_row` appends rows.
+- Use `workbook_sort_table` to sort a table by one or more columns: `fields` is a list of `{key, ascending}` where `key` is the zero-based column index within the table (earlier fields take priority; `matchCase` is optional).
+- Use `workbook_filter_table` (`table`, `column` header name, `criteria`) to filter a table column — e.g. `criteria` = `{filterOn: "values", values: ["A","B"]}` or `{filterOn: "custom", criterion1: ">100", operator: "And"}` — and `workbook_clear_table_filters` to remove all filters and show every row again.
+- Use `workbook_format_range` to apply visual formatting in place: `fillColor`, font (`fontBold`/`fontItalic`/`fontUnderline`/`fontColor`/`fontSize`/`fontName`), alignment (`horizontalAlignment`/`verticalAlignment`/`wrapText`), and borders (`borderStyle` like `Continuous` drawn on `borderEdges`, default the four outer edges). Colors are hex strings like `#FFFF00`. Number formats are still set via `workbook_update_range`.
+- Use `workbook_set_column_width` (`columns` like `A:C`) and `workbook_set_row_height` (`rows` like `1:10`) to size columns/rows: pass `width`/`height` in points, or `autofit=true` to size to content.
+
 ## Safety Notes
 
 - The server acts as the signed-in user and can access shared resources only where that user already has permission.

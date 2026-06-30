@@ -10,3 +10,19 @@ __pycache__/
 *.pyc
 .DS_Store
 .claude/
+
+# Local client config (may contain machine paths / secrets)
+claude_desktop_config.json
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# OS / misc
+Thumbs.db
+*.log
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
