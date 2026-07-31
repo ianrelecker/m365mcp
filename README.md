@@ -175,13 +175,13 @@ This repo also ships an [MCP Bundle](https://github.com/anthropics/mcpb) manifes
 
 You still need the Microsoft Entra app from step 2. You do not need step 3 or step 4.
 
-Build the bundle from a checkout of this repo:
+Download `m365-mcp-<version>.mcpb` from the [Releases page](https://github.com/ianrelecker/m365mcp/releases). If you would rather build it yourself from a checkout of this repo:
 
 ```bash
 npx @anthropic-ai/mcpb pack
 ```
 
-That writes `m365-mcp-<version>.mcpb`. Open it with Claude Desktop, or drag it onto the Extensions pane in Claude Desktop settings, and Claude will show an install dialog asking for:
+Open the `.mcpb` file with Claude Desktop, or drag it onto the Extensions pane in Claude Desktop settings, and Claude will show an install dialog asking for:
 
 - **Microsoft Tenant ID**
 - **Microsoft Client ID**
@@ -307,6 +307,15 @@ uv run python scripts/sync_mcpb_tools.py
 ```
 
 `tests/test_manifest.py` fails if the manifest is out of date, so `uv run pytest` catches a missed sync.
+
+To publish a bundle, bump `version` in both `pyproject.toml` and `manifest.json`, then push a matching tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The [Release MCPB bundle](.github/workflows/release-mcpb.yml) workflow verifies the tag matches `manifest.json`, checks the tool list is in sync, runs the tests, packs the bundle, and attaches it to the GitHub Release for that tag. Running the workflow manually from the Actions tab builds the bundle and uploads it as a workflow artifact without creating a release.
 
 ## Tool Reference
 
