@@ -1,4 +1,6 @@
 dist
+# Packed MCP Bundle build output (distribute via GitHub Releases, not git)
+*.mcpb
 .env
 .env.local
 .env.*.local

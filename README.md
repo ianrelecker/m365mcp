@@ -169,6 +169,37 @@ Keep Microsoft secrets in `.env`. Do not paste tenant IDs, client secrets, or to
 
 After saving the config, fully quit and reopen Claude Desktop.
 
+## Alternative To Steps 3 And 4: Install As A `.mcpb` Extension
+
+This repo also ships an [MCP Bundle](https://github.com/anthropics/mcpb) manifest ([manifest.json](manifest.json)), so you can install the server into Claude Desktop as a single `.mcpb` file instead of writing a `.env` file and editing `claude_desktop_config.json` by hand.
+
+You still need the Microsoft Entra app from step 2. You do not need step 3 or step 4.
+
+Build the bundle from a checkout of this repo:
+
+```bash
+npx @anthropic-ai/mcpb pack
+```
+
+That writes `m365-mcp-<version>.mcpb`. Open it with Claude Desktop, or drag it onto the Extensions pane in Claude Desktop settings, and Claude will show an install dialog asking for:
+
+- **Microsoft Tenant ID**
+- **Microsoft Client ID**
+- **Microsoft Client Secret**
+- **Token Encryption Key** — generate it with the command in step 3
+- **Known Shared Mailboxes** — optional, comma-separated
+- **Local Sign-in Port** — defaults to `8787`
+- **Local Audit Log** — defaults to on
+
+Claude stores those values for you, so no `.env` file is involved. Secrets are marked sensitive in the manifest, so Claude keeps them in the OS keychain rather than in plain config.
+
+Notes:
+
+- The bundle uses the `uv` server type: it ships this repo's source plus `pyproject.toml` and `uv.lock`, and Claude installs the Python dependencies with `uv` at install time. Recent Claude Desktop versions manage `uv` and Python for you.
+- If you change **Local Sign-in Port**, update the redirect URI on your Entra app registration to match: `http://localhost:PORT/auth/microsoft/callback`.
+- After installing, continue with step 5 to connect Microsoft.
+- `.env`, `.tokens/`, `.audit/`, and `claude_desktop_config.json` are excluded from the bundle by [.mcpbignore](.mcpbignore), so a bundle you build never carries your local secrets. Still, treat a built `.mcpb` as source code you are sharing, not as a configured install.
+
 ## 5. Connect Microsoft
 
 Do not run the MCP server manually for normal use. Let Claude Desktop start it.
@@ -261,6 +292,21 @@ uv run mcp run src/m365_mcp/server.py
 ```
 
 Stop the manual smoke test before opening Claude Desktop. Two copies cannot both use the same localhost helper port.
+
+Build and validate the `.mcpb` bundle:
+
+```bash
+npx @anthropic-ai/mcpb validate manifest.json
+npx @anthropic-ai/mcpb pack
+```
+
+`manifest.json` advertises every tool this server exposes. After adding, renaming, or removing a tool, regenerate that list:
+
+```bash
+uv run python scripts/sync_mcpb_tools.py
+```
+
+`tests/test_manifest.py` fails if the manifest is out of date, so `uv run pytest` catches a missed sync.
 
 ## Tool Reference
 
