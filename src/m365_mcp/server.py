@@ -1,4 +1,5 @@
 import contextlib
+import json
 import socket
 import sys
 from collections.abc import Callable, Iterator, Sequence
@@ -11,7 +12,7 @@ import anyio
 import httpx
 import uvicorn
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ContentBlock
+from mcp.types import ContentBlock, ImageContent, TextContent
 from pydantic import Field
 
 from m365_mcp.audit import LocalAuditLogger
@@ -42,7 +43,11 @@ from m365_mcp.excel_workbook import (
     WorkbookWriteResult,
 )
 from m365_mcp.microsoft_auth import MicrosoftAuthService
-from m365_mcp.microsoft_graph import MicrosoftGraphClient
+from m365_mcp.microsoft_graph import (
+    DEFAULT_IMAGE_MAX_BYTES,
+    DEFAULT_MAX_INLINE_IMAGES,
+    MicrosoftGraphClient,
+)
 from m365_mcp.sharepoint_files import (
     DriveItemInfo,
     DriveItemsResult,
@@ -52,6 +57,7 @@ from m365_mcp.sharepoint_files import (
     SitesResult,
 )
 from m365_mcp.models import (
+    AttachmentImage,
     AuthStatusResult,
     CalendarCreateEventResult,
     CalendarDeleteEventResult,
@@ -65,12 +71,14 @@ from m365_mcp.models import (
     ContactsSearchResult,
     M365CapabilitiesResult,
     MailAttachmentContentResult,
+    MailAttachmentImageResult,
     MailCategoryResult,
     MailCheckInboxResult,
     MailCreateDraftResult,
     MailFolderMutationResult,
     MailFolderTreeResult,
     MailGetResult,
+    MailInlineImagesResult,
     MailListAttachmentsResult,
     MailListCategoriesResult,
     MailListDraftsResult,
@@ -303,6 +311,43 @@ def _can_bind_localhost(port: int) -> bool:
 
 def _load_capabilities_text() -> str:
     return CAPABILITIES_PATH.read_text("utf-8")
+
+
+def _image_block(image: AttachmentImage) -> ImageContent:
+    return ImageContent(
+        type="image",
+        data=image.dataBase64,
+        mimeType=image.mimeType,
+    )
+
+
+def _attachment_image_blocks(
+    result: MailAttachmentImageResult | MailInlineImagesResult,
+) -> list[ContentBlock]:
+    """Render an image result as content blocks.
+
+    The base64 payload only travels in the image blocks; the text block carries
+    the metadata (names, content IDs, skip reasons) with ``dataBase64`` dropped
+    so the encoded bytes are not repeated as text.
+    """
+
+    images = (
+        [result.image]
+        if isinstance(result, MailAttachmentImageResult)
+        else list(result.images)
+    )
+    summary = result.model_dump(mode="json", exclude={"image", "images"})
+    summary["images"] = [
+        image.model_dump(mode="json", exclude={"dataBase64"})
+        for image in images
+        if image is not None
+    ]
+
+    blocks: list[ContentBlock] = [
+        TextContent(type="text", text=json.dumps(summary, indent=2))
+    ]
+    blocks.extend(_image_block(image) for image in images if image is not None)
+    return blocks
 
 
 def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
@@ -853,6 +898,57 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             maxBytes=maxBytes,
             maxChars=maxChars,
         )
+
+    @mcp.tool(
+        name="mail_get_attachment_image",
+        description=(
+            "View an image attachment. Returns the picture itself as image "
+            "content so it can be read directly. Supports PNG, JPEG, GIF, and "
+            "WEBP; other types return metadata with an unsupportedReason."
+        ),
+        structured_output=False,
+    )
+    async def mail_get_attachment_image(
+        messageId: str,
+        attachmentId: str,
+        mailbox: str | None = None,
+        maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+    ) -> list[ContentBlock]:
+        runtime = runtime_provider.get()
+        result = await runtime.graph.get_attachment_image(
+            mailbox=mailbox,
+            messageId=messageId,
+            attachmentId=attachmentId,
+            maxBytes=maxBytes,
+        )
+        return _attachment_image_blocks(result)
+
+    @mcp.tool(
+        name="mail_get_inline_images",
+        description=(
+            "View the pictures embedded in a message body. Returns each inline "
+            "image as image content, keyed by the contentId that the HTML body "
+            "references as cid:. Set includeNonInline to also pull regular "
+            "image attachments."
+        ),
+        structured_output=False,
+    )
+    async def mail_get_inline_images(
+        messageId: str,
+        mailbox: str | None = None,
+        maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+        maxImages: int = DEFAULT_MAX_INLINE_IMAGES,
+        includeNonInline: bool = False,
+    ) -> list[ContentBlock]:
+        runtime = runtime_provider.get()
+        result = await runtime.graph.get_inline_images(
+            mailbox=mailbox,
+            messageId=messageId,
+            maxBytes=maxBytes,
+            maxImages=maxImages,
+            includeNonInline=includeNonInline,
+        )
+        return _attachment_image_blocks(result)
 
     @mcp.tool(
         name="mail_get_thread",

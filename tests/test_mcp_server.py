@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import socket
@@ -11,14 +12,19 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from m365_mcp.models import (
     AccountInfo,
+    AttachmentImage,
+    AttachmentInfo,
     AuthStatusResult,
     CalendarCreateEventResult,
     CalendarDateTime,
     CalendarEvent,
+    MailAttachmentImageResult,
     MailCreateDraftResult,
+    MailInlineImagesResult,
     MessageBody,
     MessageSummary,
     MicrosoftConnectionStatus,
+    SkippedAttachment,
 )
 from m365_mcp.excel_workbook import ExcelWorkbookClient
 from m365_mcp.server import RuntimeServices, _can_bind_localhost, create_mcp_server
@@ -136,6 +142,8 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "mail_move",
             "mail_list_attachments",
             "mail_get_attachment_content",
+            "mail_get_attachment_image",
+            "mail_get_inline_images",
             "mail_get_thread",
             "mail_create_reply_draft",
             "mail_send_reply",
@@ -262,6 +270,90 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             },
         )
         assert event.structuredContent["event"]["subject"] == "Planning"
+
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_image_tools_return_image_content_blocks(config_factory) -> None:
+    png_bytes = b"\x89PNG\r\n\x1a\nlogo"
+    png_payload = base64.b64encode(png_bytes).decode("ascii")
+
+    def attachment_info(**overrides) -> AttachmentInfo:
+        return AttachmentInfo(
+            id=overrides.get("id", "inline-png"),
+            name=overrides.get("name", "logo.png"),
+            contentType="image/png",
+            size=len(png_bytes),
+            isInline=overrides.get("isInline", True),
+            contentId=overrides.get("contentId", "logo@01D9"),
+        )
+
+    def attachment_image(**overrides) -> AttachmentImage:
+        return AttachmentImage(
+            attachment=attachment_info(**overrides),
+            mimeType="image/png",
+            dataBase64=png_payload,
+            byteSize=len(png_bytes),
+        )
+
+    class ImageGraphClient(StubGraphClient):
+        async def get_attachment_image(self, **kwargs) -> MailAttachmentImageResult:
+            return MailAttachmentImageResult(
+                mailbox=kwargs["mailbox"] or "me",
+                messageId=kwargs["messageId"],
+                attachment=attachment_info(),
+                image=attachment_image(),
+            )
+
+        async def get_inline_images(self, **kwargs) -> MailInlineImagesResult:
+            return MailInlineImagesResult(
+                mailbox=kwargs["mailbox"] or "me",
+                messageId=kwargs["messageId"],
+                images=[attachment_image(), attachment_image(id="inline-2")],
+                skipped=[
+                    SkippedAttachment(
+                        attachment=attachment_info(id="banner", name="banner.png"),
+                        reason="Image size exceeds maxBytes=4000000",
+                    )
+                ],
+            )
+
+    http_client = httpx.AsyncClient()
+    runtime = RuntimeServices(
+        config=config_factory(localBaseUrl="http://localhost:8787"),
+        microsoft_auth=StubAuthService(),
+        graph=ImageGraphClient(),
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(server, raise_exceptions=True) as session:
+        single = await session.call_tool(
+            "mail_get_attachment_image",
+            {"messageId": "msg-1", "attachmentId": "inline-png"},
+        )
+        assert [block.type for block in single.content] == ["text", "image"]
+        assert single.content[1].data == png_payload
+        assert single.content[1].mimeType == "image/png"
+        summary = json.loads(single.content[0].text)
+        assert summary["images"][0]["attachment"]["contentId"] == "logo@01D9"
+        # The base64 payload rides in the image block only, never as text.
+        assert png_payload not in single.content[0].text
+
+        inline = await session.call_tool("mail_get_inline_images", {"messageId": "msg-1"})
+        assert [block.type for block in inline.content] == ["text", "image", "image"]
+        inline_summary = json.loads(inline.content[0].text)
+        assert [image["attachment"]["id"] for image in inline_summary["images"]] == [
+            "inline-png",
+            "inline-2",
+        ]
+        assert inline_summary["skipped"][0]["attachment"]["id"] == "banner"
+        assert inline_summary["truncated"] is False
 
     await http_client.aclose()
 

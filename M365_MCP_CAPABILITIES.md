@@ -43,11 +43,20 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 ## Attachments
 
-- Use `mail_list_attachments` before reading attachment content.
+- Use `mail_list_attachments` before reading attachment content. Results include `contentId` and `isInline` so inline pictures can be told apart from real attachments.
 - `mail_get_attachment_content` returns content for small text-like files and extracts text from small PDFs.
 - PDF extraction is text-only. Scanned/image-only PDFs need OCR and return `unsupportedReason`.
 - Large, binary, item, or reference attachments return metadata with `unsupportedReason`.
 - The server does not save attachments to disk.
+
+## Pictures
+
+- `mail_get_attachment_image` returns one image attachment as image content, so the picture itself can be viewed rather than described from its file name.
+- `mail_get_inline_images` returns every picture embedded in a message body. Each image carries the `contentId` that the HTML body references as `cid:`, which is how a picture is matched to its place in the message. Set `includeNonInline=True` to also pull regular image attachments.
+- Supported formats are PNG, JPEG, GIF, and WEBP. Other image types (BMP, TIFF, SVG, HEIC) return `unsupportedReason`; SVG can often be read as text with `mail_get_attachment_content`.
+- Both tools cap each image at `maxBytes` (default 4 MB), and `mail_get_inline_images` returns at most `maxImages` pictures (default 10) with `truncated: true` when a message has more. Oversized images are listed under `skipped` with a reason instead of failing the call.
+- Prefer `mail_get_inline_images` over fetching inline pictures one at a time; it reads the attachment collection once.
+- Signature logos and tracking pixels are inline images too, so expect small decorative pictures alongside meaningful ones.
 
 ## Threads And Replies
 

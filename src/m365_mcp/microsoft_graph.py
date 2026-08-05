@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover - pypdf is an optional import at module lo
     PdfReader = None  # type: ignore[assignment]
 
 from .models import (
+    AttachmentImage,
     AttachmentInfo,
     CalendarAttendee,
     CalendarCreateEventResult,
@@ -34,6 +35,7 @@ from .models import (
     ContactsSearchResult,
     FullMessage,
     MailAttachmentContentResult,
+    MailAttachmentImageResult,
     MailCategoryInfo,
     MailCategoryResult,
     MailCheckInboxResult,
@@ -43,6 +45,7 @@ from .models import (
     MailFolderTreeNode,
     MailFolderTreeResult,
     MailGetResult,
+    MailInlineImagesResult,
     MailListAttachmentsResult,
     MailListCategoriesResult,
     MailListDraftsResult,
@@ -60,6 +63,7 @@ from .models import (
     MailUpdateMessageResult,
     MessageBody,
     MessageSummary,
+    SkippedAttachment,
 )
 from .microsoft_auth import MicrosoftAuthService
 
@@ -134,6 +138,30 @@ SAFE_ATTACHMENT_CONTENT_TYPES = {
     "text/tab-separated-values",
     "text/xml",
 }
+# Image types every MCP client can render as image content.
+SUPPORTED_IMAGE_CONTENT_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+}
+IMAGE_EXTENSION_CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".jfif": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+IMAGE_CONTENT_TYPE_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+    "image/x-png": "image/png",
+}
+# Well below the per-image ceiling of common MCP clients, so a message full of
+# inline pictures still fits in one tool result.
+DEFAULT_IMAGE_MAX_BYTES = 4_000_000
+DEFAULT_MAX_INLINE_IMAGES = 10
 SAFE_ATTACHMENT_EXTENSIONS = {
     ".csv",
     ".ics",
@@ -815,14 +843,11 @@ class MicrosoftGraphClient:
                 unsupportedReason=unsupported,
             )
 
-        content_bytes: bytes
-        content_bytes_value = metadata.get("contentBytes")
-        if isinstance(content_bytes_value, str):
-            content_bytes = base64.b64decode(content_bytes_value)
-        else:
-            content_bytes = await self._request_bytes(
-                f"{base}/messages/{quote(messageId, safe='')}/attachments/{quote(attachmentId, safe='')}/$value"
-            )
+        content_bytes = await self._attachment_bytes(
+            base,
+            messageId=messageId,
+            attachment=metadata,
+        )
 
         if len(content_bytes) > maxBytes:
             return MailAttachmentContentResult(
@@ -866,6 +891,115 @@ class MicrosoftGraphClient:
             attachment=attachment,
             content=content_bytes.decode("utf-8", errors="replace"),
             encoding="utf-8",
+        )
+
+    async def get_attachment_image(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        attachmentId: str,
+        maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+    ) -> MailAttachmentImageResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        metadata = await self._request(
+            f"{base}/messages/{quote(messageId, safe='')}/attachments/{quote(attachmentId, safe='')}"
+        )
+        attachment = self._map_attachment(metadata)
+        unsupported = self._attachment_image_unsupported_reason(
+            attachment,
+            maxBytes=maxBytes,
+        )
+        if unsupported:
+            return MailAttachmentImageResult(
+                mailbox=normalized_mailbox or "me",
+                messageId=messageId,
+                attachment=attachment,
+                unsupportedReason=unsupported,
+            )
+
+        content_bytes = await self._attachment_bytes(
+            base,
+            messageId=messageId,
+            attachment=metadata,
+        )
+        if len(content_bytes) > maxBytes:
+            return MailAttachmentImageResult(
+                mailbox=normalized_mailbox or "me",
+                messageId=messageId,
+                attachment=attachment,
+                unsupportedReason=f"Image content exceeds maxBytes={maxBytes}",
+            )
+
+        return MailAttachmentImageResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            attachment=attachment,
+            image=self._build_attachment_image(attachment, content_bytes),
+        )
+
+    async def get_inline_images(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+        maxImages: int = DEFAULT_MAX_INLINE_IMAGES,
+        includeNonInline: bool = False,
+    ) -> MailInlineImagesResult:
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        listed = await self._request(
+            f"{base}/messages/{quote(messageId, safe='')}/attachments"
+        )
+
+        images: list[AttachmentImage] = []
+        skipped: list[SkippedAttachment] = []
+        truncated = False
+
+        for raw in listed.get("value", []):
+            attachment = self._map_attachment(raw)
+            if not self._is_image_attachment(attachment):
+                continue
+            if not includeNonInline and not self._is_inline_attachment(attachment):
+                continue
+            if len(images) >= maxImages:
+                truncated = True
+                break
+
+            unsupported = self._attachment_image_unsupported_reason(
+                attachment,
+                maxBytes=maxBytes,
+            )
+            if unsupported:
+                skipped.append(
+                    SkippedAttachment(attachment=attachment, reason=unsupported)
+                )
+                continue
+
+            content_bytes = await self._attachment_bytes(
+                base,
+                messageId=messageId,
+                attachment=raw,
+            )
+            if len(content_bytes) > maxBytes:
+                skipped.append(
+                    SkippedAttachment(
+                        attachment=attachment,
+                        reason=f"Image content exceeds maxBytes={maxBytes}",
+                    )
+                )
+                continue
+
+            images.append(self._build_attachment_image(attachment, content_bytes))
+
+        return MailInlineImagesResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            images=images,
+            skipped=skipped,
+            truncated=truncated,
         )
 
     async def get_thread(
@@ -2117,8 +2251,86 @@ class MicrosoftGraphClient:
         is_safe_type = content_type.startswith("text/") or content_type in SAFE_ATTACHMENT_CONTENT_TYPES
         is_safe_extension = any(name.endswith(extension) for extension in SAFE_ATTACHMENT_EXTENSIONS)
         if not is_safe_type and not is_safe_extension:
+            if self._is_image_attachment(attachment):
+                return (
+                    "Attachment is an image; use mail_get_attachment_image or "
+                    "mail_get_inline_images to view it"
+                )
             return "Attachment content type is not text-like and was not returned"
         return None
+
+    async def _attachment_bytes(
+        self,
+        base_path: str,
+        *,
+        messageId: str,
+        attachment: dict[str, Any],
+    ) -> bytes:
+        """Return raw attachment bytes, preferring the inline ``contentBytes``.
+
+        Microsoft Graph returns ``contentBytes`` on file attachments read either
+        singly or through the collection, so the extra ``/$value`` round trip is
+        only needed when Graph omitted it.
+        """
+
+        content_bytes_value = attachment.get("contentBytes")
+        if isinstance(content_bytes_value, str):
+            return base64.b64decode(content_bytes_value)
+        attachment_id = str(attachment["id"])
+        return await self._request_bytes(
+            f"{base_path}/messages/{quote(messageId, safe='')}"
+            f"/attachments/{quote(attachment_id, safe='')}/$value"
+        )
+
+    def _image_mime_type(self, attachment: AttachmentInfo) -> str | None:
+        content_type = (attachment.contentType or "").split(";")[0].strip().lower()
+        content_type = IMAGE_CONTENT_TYPE_ALIASES.get(content_type, content_type)
+        if content_type in SUPPORTED_IMAGE_CONTENT_TYPES:
+            return content_type
+        name = (attachment.name or "").lower()
+        for extension, mime_type in IMAGE_EXTENSION_CONTENT_TYPES.items():
+            if name.endswith(extension):
+                return mime_type
+        return None
+
+    def _is_image_attachment(self, attachment: AttachmentInfo) -> bool:
+        content_type = (attachment.contentType or "").split(";")[0].strip().lower()
+        return content_type.startswith("image/") or (
+            self._image_mime_type(attachment) is not None
+        )
+
+    def _is_inline_attachment(self, attachment: AttachmentInfo) -> bool:
+        return attachment.isInline or bool(attachment.contentId)
+
+    def _attachment_image_unsupported_reason(
+        self,
+        attachment: AttachmentInfo,
+        *,
+        maxBytes: int,
+    ) -> str | None:
+        if attachment.attachmentType not in (None, "#microsoft.graph.fileAttachment"):
+            return "Only file attachments can be read as images in this MCP server"
+        if self._image_mime_type(attachment) is None:
+            return (
+                "Attachment is not a PNG, JPEG, GIF, or WEBP image and cannot be "
+                "returned as image content"
+            )
+        if attachment.size is not None and attachment.size > maxBytes:
+            return f"Image size exceeds maxBytes={maxBytes}"
+        return None
+
+    def _build_attachment_image(
+        self,
+        attachment: AttachmentInfo,
+        content_bytes: bytes,
+    ) -> AttachmentImage:
+        mime_type = self._image_mime_type(attachment) or "image/png"
+        return AttachmentImage(
+            attachment=attachment,
+            mimeType=mime_type,
+            dataBase64=base64.b64encode(content_bytes).decode("ascii"),
+            byteSize=len(content_bytes),
+        )
 
     def _is_pdf_attachment(self, attachment: AttachmentInfo) -> bool:
         content_type = (attachment.contentType or "").split(";")[0].strip().lower()
@@ -2184,6 +2396,7 @@ class MicrosoftGraphClient:
             if attachment.get("size") is not None
             else None,
             isInline=bool(attachment.get("isInline", False)),
+            contentId=self._nullable_string(attachment.get("contentId")),
             lastModifiedDateTime=self._nullable_string(
                 attachment.get("lastModifiedDateTime")
             ),
