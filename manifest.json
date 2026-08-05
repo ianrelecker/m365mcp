@@ -4,7 +4,7 @@
   "display_name": "Microsoft 365",
   "version": "0.1.0",
   "description": "Local MCP server for one Microsoft 365 user: mail, folders, rules, categories, contacts, calendar, SharePoint browsing, and in-place Excel editing.",
-  "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, send, move, flag, and categorize mail, including shared/delegated mailboxes.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- View image attachments and inline pictures embedded in message bodies.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders (read-only).\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
+  "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, send, move, flag, and categorize mail, including shared/delegated mailboxes.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- View image attachments and inline pictures embedded in message bodies.\n- Look at PDF attachments page by page, including scanned documents, by rendering pages to images.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders (read-only).\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
   "author": {
     "name": "ianrelecker",
     "url": "https://github.com/ianrelecker"
@@ -213,6 +213,10 @@
     {
       "name": "mail_get_inline_images",
       "description": "View the pictures embedded in a message body. Returns each inline image as image content, keyed by the contentId that the HTML body references as cid:. Set includeNonInline to also pull regular\u2026"
+    },
+    {
+      "name": "mail_get_attachment_pdf_pages",
+      "description": "Look at the pages of a PDF attachment. Renders each page to an image so layout, tables, charts, signatures, stamps, and scanned documents can be read directly. Returns maxPages pages starting at\u2026"
     },
     {
       "name": "mail_get_thread",

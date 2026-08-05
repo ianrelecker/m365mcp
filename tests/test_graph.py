@@ -1021,6 +1021,199 @@ async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -
     await client.aclose()
 
 
+def _single_page_pdf(text: bytes = b"INVOICE 12345", pages: int = 2) -> bytes:
+    """Build a small valid PDF so rendering runs against real pdfium."""
+
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"",  # placeholder for the page tree, filled in below
+    ]
+    kids: list[bytes] = []
+    for page_index in range(pages):
+        page_obj = len(objects) + 1
+        content_obj = page_obj + 1
+        kids.append(b"%d 0 R" % page_obj)
+        objects.append(
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
+            % (2 + pages * 2 + 1, content_obj)
+        )
+        stream = b"BT /F1 36 Tf 72 700 Td (%s p%d) Tj ET" % (text, page_index + 1)
+        objects.append(
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream"
+        )
+    objects[1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(kids), pages)
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
+    return bytes(out)
+
+
+@pytest.mark.anyio
+async def test_pdf_attachment_page_rendering() -> None:
+    pdf_bytes = _single_page_pdf(pages=3)
+    payload = base64.b64encode(pdf_bytes).decode("ascii")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments/pdf-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "pdf-1",
+                    "name": "invoice.pdf",
+                    "contentType": "application/pdf",
+                    "size": len(pdf_bytes),
+                    "contentBytes": payload,
+                },
+            )
+
+        if request.url.path.endswith("/messages/msg-1/attachments/notes"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "notes",
+                    "name": "notes.txt",
+                    "contentType": "text/plain",
+                    "size": 4,
+                },
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    rendered = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        maxPages=2,
+    )
+    assert rendered.unsupportedReason is None
+    assert rendered.pageCount == 3
+    assert [page.pageNumber for page in rendered.pages] == [1, 2]
+    assert rendered.truncated is True
+    first = rendered.pages[0]
+    assert first.mimeType == "image/jpeg"
+    assert first.byteSize > 0
+    # Long edge honours the requested target, aspect ratio preserved.
+    assert max(first.widthPx, first.heightPx) == 1600
+    assert base64.b64decode(first.dataBase64)[:2] == b"\xff\xd8"
+
+    paged = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        firstPage=3,
+    )
+    assert [page.pageNumber for page in paged.pages] == [3]
+    assert paged.truncated is False
+
+    smaller = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        maxPages=1,
+        longEdge=400,
+    )
+    assert max(smaller.pages[0].widthPx, smaller.pages[0].heightPx) == 400
+    assert smaller.pages[0].byteSize < first.byteSize
+
+    # The byte budget still yields the first page rather than nothing.
+    budgeted = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        maxTotalBytes=1,
+    )
+    assert [page.pageNumber for page in budgeted.pages] == [1]
+    assert budgeted.truncated is True
+
+    beyond_end = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        firstPage=99,
+    )
+    assert beyond_end.pages == []
+    assert "has 3 pages" in beyond_end.unsupportedReason
+
+    not_pdf = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="notes",
+    )
+    assert not_pdf.pages == []
+    assert not_pdf.unsupportedReason == "Attachment is not a PDF"
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_pdf_page_rendering_reports_damaged_file() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "pdf-bad",
+                "name": "broken.pdf",
+                "contentType": "application/pdf",
+                "size": 9,
+                "contentBytes": base64.b64encode(b"not a pdf").decode("ascii"),
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    result = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-bad",
+    )
+    assert result.pages == []
+    assert "Could not open PDF" in result.unsupportedReason
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_pdf_page_rendering_without_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(graph_module, "pypdfium2", None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "pdf-1",
+                "name": "invoice.pdf",
+                "contentType": "application/pdf",
+                "size": 128,
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    result = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+    )
+    assert result.pages == []
+    assert "pypdfium2" in result.unsupportedReason
+
+    await client.aclose()
+
+
 @pytest.mark.anyio
 async def test_contacts_crud_search_and_folders() -> None:
     requests: list[tuple[str, str, dict[str, str], dict[str, object] | None]] = []

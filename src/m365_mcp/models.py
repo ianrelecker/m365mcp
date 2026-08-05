@@ -267,6 +267,27 @@ class MailInlineImagesResult(AppModel):
     truncated: bool = False
 
 
+class PdfPageImage(AppModel):
+    """One rendered PDF page, ready to hand to the model as image content."""
+
+    pageNumber: int
+    mimeType: str
+    dataBase64: str
+    byteSize: int
+    widthPx: int
+    heightPx: int
+
+
+class MailAttachmentPdfResult(AppModel):
+    mailbox: str
+    messageId: str
+    attachment: AttachmentInfo
+    pageCount: int | None = None
+    pages: list[PdfPageImage] = Field(default_factory=list)
+    truncated: bool = False
+    unsupportedReason: str | None = None
+
+
 class MailThreadResult(AppModel):
     mailbox: str
     conversationId: str

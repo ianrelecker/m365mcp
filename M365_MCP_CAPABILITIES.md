@@ -45,9 +45,19 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 - Use `mail_list_attachments` before reading attachment content. Results include `contentId` and `isInline` so inline pictures can be told apart from real attachments.
 - `mail_get_attachment_content` returns content for small text-like files and extracts text from small PDFs.
-- PDF extraction is text-only. Scanned/image-only PDFs need OCR and return `unsupportedReason`.
 - Large, binary, item, or reference attachments return metadata with `unsupportedReason`.
 - The server does not save attachments to disk.
+
+## PDFs
+
+- Two ways to read a PDF, and the choice matters:
+  - `mail_get_attachment_content` pulls out the text layer. Cheap and exact for a plain prose document, and the right default when only the words matter.
+  - `mail_get_attachment_pdf_pages` renders pages to images so the pages can actually be looked at. Use it for invoices, statements, forms, contracts with signatures or stamps, anything with tables, charts, or multi-column layout, and any scanned document — text extraction either loses the structure or returns nothing at all.
+- A scanned or image-only PDF has no text layer: `mail_get_attachment_content` reports that it needs OCR, while `mail_get_attachment_pdf_pages` shows the pages directly and needs no OCR step.
+- Page rendering returns `maxPages` pages (default 5) starting at `firstPage` (default 1), with `pageCount` for the whole document and `truncated: true` when pages remain. Page through a long document by raising `firstPage` rather than raising `maxPages` — pages are expensive in tokens.
+- Prefer targeting the pages that matter. If the text layer says the totals are on page 6, render page 6 rather than the first five.
+- `longEdge` (default 1600 px) controls rendering resolution. Raise it for dense small print; lower it to save tokens on a document that is mostly headings.
+- Password-protected or damaged PDFs return `unsupportedReason` rather than failing the call.
 
 ## Pictures
 

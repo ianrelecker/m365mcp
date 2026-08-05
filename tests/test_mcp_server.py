@@ -19,11 +19,13 @@ from m365_mcp.models import (
     CalendarDateTime,
     CalendarEvent,
     MailAttachmentImageResult,
+    MailAttachmentPdfResult,
     MailCreateDraftResult,
     MailInlineImagesResult,
     MessageBody,
     MessageSummary,
     MicrosoftConnectionStatus,
+    PdfPageImage,
     SkippedAttachment,
 )
 from m365_mcp.excel_workbook import ExcelWorkbookClient
@@ -144,6 +146,7 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "mail_get_attachment_content",
             "mail_get_attachment_image",
             "mail_get_inline_images",
+            "mail_get_attachment_pdf_pages",
             "mail_get_thread",
             "mail_create_reply_draft",
             "mail_send_reply",
@@ -306,6 +309,26 @@ async def test_image_tools_return_image_content_blocks(config_factory) -> None:
                 image=attachment_image(),
             )
 
+        async def get_attachment_pdf_pages(self, **kwargs) -> MailAttachmentPdfResult:
+            return MailAttachmentPdfResult(
+                mailbox=kwargs["mailbox"] or "me",
+                messageId=kwargs["messageId"],
+                attachment=attachment_info(id="pdf-1", name="invoice.pdf"),
+                pageCount=7,
+                pages=[
+                    PdfPageImage(
+                        pageNumber=number,
+                        mimeType="image/jpeg",
+                        dataBase64=png_payload,
+                        byteSize=len(png_bytes),
+                        widthPx=1237,
+                        heightPx=1600,
+                    )
+                    for number in (1, 2)
+                ],
+                truncated=True,
+            )
+
         async def get_inline_images(self, **kwargs) -> MailInlineImagesResult:
             return MailInlineImagesResult(
                 mailbox=kwargs["mailbox"] or "me",
@@ -341,9 +364,21 @@ async def test_image_tools_return_image_content_blocks(config_factory) -> None:
         assert single.content[1].data == png_payload
         assert single.content[1].mimeType == "image/png"
         summary = json.loads(single.content[0].text)
-        assert summary["images"][0]["attachment"]["contentId"] == "logo@01D9"
+        assert summary["image"]["attachment"]["contentId"] == "logo@01D9"
         # The base64 payload rides in the image block only, never as text.
         assert png_payload not in single.content[0].text
+
+        pdf = await session.call_tool(
+            "mail_get_attachment_pdf_pages",
+            {"messageId": "msg-1", "attachmentId": "pdf-1", "maxPages": 2},
+        )
+        assert [block.type for block in pdf.content] == ["text", "image", "image"]
+        assert pdf.content[1].mimeType == "image/jpeg"
+        pdf_summary = json.loads(pdf.content[0].text)
+        assert pdf_summary["pageCount"] == 7
+        assert [page["pageNumber"] for page in pdf_summary["pages"]] == [1, 2]
+        assert pdf_summary["truncated"] is True
+        assert png_payload not in pdf.content[0].text
 
         inline = await session.call_tool("mail_get_inline_images", {"messageId": "msg-1"})
         assert [block.type for block in inline.content] == ["text", "image", "image"]

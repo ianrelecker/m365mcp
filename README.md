@@ -11,6 +11,7 @@ Claude can:
 - Check and search mail, including shared mailboxes you can access.
 - Read message bodies, threads, categories, flags, Focused/Other classification, read/unread state, subfolders, and small text/PDF attachments.
 - View image attachments and the pictures embedded in a message body (PNG, JPEG, GIF, WEBP), so Claude sees the picture instead of just its file name.
+- Look at PDF attachments page by page — rendered to images, so invoices, tables, charts, signatures, and scanned documents are readable without OCR.
 - Draft or send mail, reply in threads, move messages, and mark messages read/unread.
 - Create, rename, delete, and navigate mail folders and subfolders.
 - List, create, update, and delete Outlook Inbox rules.
@@ -248,6 +249,8 @@ Once authenticated, ask Claude things like:
 - `Move this message to Inbox/Clients/Acme.`
 - `Create a rule that moves Acme invoices to that folder.`
 - `Read the PDF attachment on this email.`
+- `What's the total on the invoice attached to that email?`
+- `The contract attachment is a scan — what does page 3 say?`
 - `Show me the screenshot attached to that email.`
 - `What do the charts embedded in this newsletter show?`
 - `Create a calendar event for tomorrow at 2 PM.`
@@ -348,6 +351,7 @@ Attachments, threads, categories, and rules:
 - `mail_get_attachment_content`
 - `mail_get_attachment_image`
 - `mail_get_inline_images`
+- `mail_get_attachment_pdf_pages`
 - `mail_get_thread`
 - `mail_create_reply_draft`
 - `mail_send_reply`
