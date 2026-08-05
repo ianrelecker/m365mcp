@@ -1,0 +1,42 @@
+# Files excluded from the packed .mcpb bundle.
+# The bundle ships this repo's source plus pyproject.toml/uv.lock; the host
+# application installs the dependencies with uv at install time.
+
+# Local secrets and state — must never be packed
+.env
+.env.local
+.env.*.local
+.tokens/
+.audit/
+claude_desktop_config.json
+
+# Environments and build output
+.venv/
+dist/
+*.mcpb
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Repo tooling not needed at runtime
+.git/
+.github/
+.gitignore
+.mcpbignore
+.claude/
+.idea/
+.vscode/
+tests/
+scripts/
+CLAUDE.md
+CODEX_MCP_SETUP.md
+
+# OS noise
+.DS_Store
+Thumbs.db
+*.log
+*.swp

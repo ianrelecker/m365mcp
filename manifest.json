@@ -1,0 +1,450 @@
+{
+  "manifest_version": "0.4",
+  "name": "m365-mcp",
+  "display_name": "Microsoft 365",
+  "version": "0.1.0",
+  "description": "Local MCP server for one Microsoft 365 user: mail, folders, rules, categories, contacts, calendar, SharePoint browsing, and in-place Excel editing.",
+  "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, send, move, flag, and categorize mail, including shared/delegated mailboxes.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders (read-only).\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
+  "author": {
+    "name": "ianrelecker",
+    "url": "https://github.com/ianrelecker"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ianrelecker/m365mcp.git"
+  },
+  "homepage": "https://github.com/ianrelecker/m365mcp",
+  "documentation": "https://github.com/ianrelecker/m365mcp/blob/main/README.md",
+  "support": "https://github.com/ianrelecker/m365mcp/issues",
+  "keywords": [
+    "microsoft-365",
+    "microsoft-graph",
+    "outlook",
+    "email",
+    "calendar",
+    "contacts",
+    "sharepoint",
+    "excel"
+  ],
+  "privacy_policies": [
+    "https://privacy.microsoft.com/en-us/privacystatement"
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/m365_mcp/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "src/m365_mcp/server.py"
+      ],
+      "env": {
+        "MICROSOFT_TENANT_ID": "${user_config.microsoft_tenant_id}",
+        "MICROSOFT_CLIENT_ID": "${user_config.microsoft_client_id}",
+        "MICROSOFT_CLIENT_SECRET": "${user_config.microsoft_client_secret}",
+        "TOKEN_ENCRYPTION_KEY": "${user_config.token_encryption_key}",
+        "KNOWN_MAILBOXES": "${user_config.known_mailboxes}",
+        "PORT": "${user_config.helper_port}",
+        "M365_AUDIT_LOG_ENABLED": "${user_config.audit_log_enabled}"
+      }
+    }
+  },
+  "user_config": {
+    "microsoft_tenant_id": {
+      "type": "string",
+      "title": "Microsoft Tenant ID",
+      "description": "Directory (tenant) ID of your Microsoft Entra app registration.",
+      "required": true
+    },
+    "microsoft_client_id": {
+      "type": "string",
+      "title": "Microsoft Client ID",
+      "description": "Application (client) ID of your Microsoft Entra app registration.",
+      "required": true
+    },
+    "microsoft_client_secret": {
+      "type": "string",
+      "title": "Microsoft Client Secret",
+      "description": "Client secret Value (not the Secret ID) from Certificates & secrets. This server uses a confidential-client Web app registration, so a secret is required.",
+      "sensitive": true,
+      "required": true
+    },
+    "token_encryption_key": {
+      "type": "string",
+      "title": "Token Encryption Key",
+      "description": "Base64-encoded 32-byte key used to encrypt the local Microsoft token cache. Generate one with: python3 -c \"import os, base64; print(base64.b64encode(os.urandom(32)).decode())\"",
+      "sensitive": true,
+      "required": true
+    },
+    "known_mailboxes": {
+      "type": "string",
+      "title": "Known Shared Mailboxes",
+      "description": "Optional comma-separated shared or delegated mailbox addresses to hint to the model, such as support@company.com,billing@company.com.",
+      "required": false,
+      "default": ""
+    },
+    "helper_port": {
+      "type": "number",
+      "title": "Local Sign-in Port",
+      "description": "Port for the local Microsoft sign-in helper page. Must match the redirect URI registered in Azure: http://localhost:PORT/auth/microsoft/callback",
+      "required": false,
+      "default": 8787,
+      "min": 1024,
+      "max": 65535
+    },
+    "audit_log_enabled": {
+      "type": "boolean",
+      "title": "Local Audit Log",
+      "description": "Write a local JSONL record of every tool call (metadata only: timestamp, tool, outcome, mailbox, key IDs). Never records tokens, secrets, message bodies, or attachment content.",
+      "required": false,
+      "default": true
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  },
+  "tools_generated": false,
+  "tools": [
+    {
+      "name": "m365_capabilities",
+      "description": "Read the model-facing guide for what this M365 MCP server can do and how to use its inbox, folder, attachment, thread, category, contact, and calendar tools."
+    },
+    {
+      "name": "auth_status",
+      "description": "Check whether the server is connected to Microsoft 365 and see any known delegated mailbox hints."
+    },
+    {
+      "name": "mail_list",
+      "description": "List messages from a mailbox folder. Use mailbox for shared/delegated mailboxes the signed-in Microsoft user can access."
+    },
+    {
+      "name": "mail_check_inbox",
+      "description": "Quickly check an inbox or shared inbox folder. Defaults to unread messages in Inbox and includes triage metadata."
+    },
+    {
+      "name": "mail_list_folders",
+      "description": "List top-level mail folders or direct child folders for own or shared mailboxes."
+    },
+    {
+      "name": "mail_folder_tree",
+      "description": "Return a nested folder tree so the model can navigate subfolders by path or ID."
+    },
+    {
+      "name": "mail_resolve_folder",
+      "description": "Resolve a folder path like Inbox/Clients/Acme or a child display name to a folder ID."
+    },
+    {
+      "name": "mail_create_folder",
+      "description": "Create a top-level mail folder or a subfolder under parentFolderId/parentFolderPath."
+    },
+    {
+      "name": "mail_rename_folder",
+      "description": "Rename a mail folder by folderId or folderPath."
+    },
+    {
+      "name": "mail_delete_folder",
+      "description": "Delete a mail folder by folderId or folderPath."
+    },
+    {
+      "name": "mail_list_rules",
+      "description": "List Outlook Inbox message rules for the mailbox."
+    },
+    {
+      "name": "mail_create_rule",
+      "description": "Create an Outlook Inbox message rule. Use raw Graph conditions/actions or convenience fields such as senderContains and moveToFolderPath."
+    },
+    {
+      "name": "mail_update_rule",
+      "description": "Update an Outlook Inbox message rule by ID."
+    },
+    {
+      "name": "mail_delete_rule",
+      "description": "Delete an Outlook Inbox message rule by ID."
+    },
+    {
+      "name": "mail_search",
+      "description": "Search a mailbox using Microsoft Graph $search. Use mailbox for shared/delegated mailboxes. Prefer mail_list filters for quick inbox triage because Graph search can be slower on large mailboxes."
+    },
+    {
+      "name": "mail_get",
+      "description": "Get the full details and body of one message by ID. Use mailbox for shared/delegated mailboxes."
+    },
+    {
+      "name": "mail_list_drafts",
+      "description": "List draft messages from the default Drafts folder. Use mailbox for shared/delegated mailboxes."
+    },
+    {
+      "name": "mail_create_draft",
+      "description": "Create a new draft email. Use mailbox for shared/delegated mailboxes and optionally set from when you need a specific sender."
+    },
+    {
+      "name": "mail_send",
+      "description": "Send a new email in one call. Prefer mail_create_draft first when the user has not explicitly approved sending."
+    },
+    {
+      "name": "mail_send_draft",
+      "description": "Send an existing draft message by ID. Use mailbox for shared/delegated mailboxes."
+    },
+    {
+      "name": "mail_move",
+      "description": "Move a message to another folder. Pass a well-known folder name like Archive or DeletedItems, or set destinationFolderIsId when passing a raw folder ID."
+    },
+    {
+      "name": "mail_list_attachments",
+      "description": "List attachment metadata for a message without downloading content."
+    },
+    {
+      "name": "mail_get_attachment_content",
+      "description": "Read small text-like attachment content. Large or binary attachments return metadata with an unsupportedReason instead of content."
+    },
+    {
+      "name": "mail_get_thread",
+      "description": "Get messages in the same conversation by messageId or conversationId."
+    },
+    {
+      "name": "mail_create_reply_draft",
+      "description": "Create a reply or reply-all draft in the original message thread. Use mail_send_draft later to send it."
+    },
+    {
+      "name": "mail_send_reply",
+      "description": "Send a reply or reply-all immediately in the original thread. Prefer mail_create_reply_draft first when approval is not explicit."
+    },
+    {
+      "name": "mail_list_categories",
+      "description": "List Outlook master categories for a mailbox."
+    },
+    {
+      "name": "mail_set_categories",
+      "description": "Replace the categories assigned to a message."
+    },
+    {
+      "name": "mail_add_categories",
+      "description": "Add categories to a message without removing existing categories."
+    },
+    {
+      "name": "mail_remove_categories",
+      "description": "Remove selected categories from a message."
+    },
+    {
+      "name": "mail_clear_categories",
+      "description": "Remove all categories from a message."
+    },
+    {
+      "name": "mail_create_category",
+      "description": "Create an Outlook master category definition."
+    },
+    {
+      "name": "mail_update_category",
+      "description": "Update an Outlook master category color. Microsoft Graph does not support renaming existing master categories."
+    },
+    {
+      "name": "mail_delete_category",
+      "description": "Delete an Outlook master category definition."
+    },
+    {
+      "name": "mail_mark_read",
+      "description": "Mark a message read or unread."
+    },
+    {
+      "name": "mail_set_flag",
+      "description": "Set a message follow-up flag status."
+    },
+    {
+      "name": "contacts_list",
+      "description": "List Outlook contacts from the default or specified contact folder."
+    },
+    {
+      "name": "contacts_search",
+      "description": "Search Outlook contacts by exact email or client-side name/email matching."
+    },
+    {
+      "name": "contacts_get",
+      "description": "Get one Outlook contact by ID."
+    },
+    {
+      "name": "contacts_create",
+      "description": "Create an Outlook contact with optional categories and addresses."
+    },
+    {
+      "name": "contacts_update",
+      "description": "Update an Outlook contact by ID, including names, phones, email addresses, categories, and physical addresses."
+    },
+    {
+      "name": "contacts_delete",
+      "description": "Delete an Outlook contact by ID."
+    },
+    {
+      "name": "contacts_set_categories",
+      "description": "Replace all categories on an Outlook contact."
+    },
+    {
+      "name": "contacts_add_categories",
+      "description": "Add categories to an Outlook contact without removing existing categories."
+    },
+    {
+      "name": "contacts_remove_categories",
+      "description": "Remove selected categories from an Outlook contact."
+    },
+    {
+      "name": "contacts_clear_categories",
+      "description": "Remove all categories from an Outlook contact."
+    },
+    {
+      "name": "contacts_list_folders",
+      "description": "List Outlook contact folders or direct child contact folders."
+    },
+    {
+      "name": "calendar_list_events",
+      "description": "List events in the default calendar over a time window. Use mailbox for shared/delegated calendars."
+    },
+    {
+      "name": "calendar_create_event",
+      "description": "Create an event in the default calendar. Use mailbox for shared/delegated calendars."
+    },
+    {
+      "name": "calendar_update_event",
+      "description": "Update an event in the default calendar by event ID."
+    },
+    {
+      "name": "calendar_delete_event",
+      "description": "Delete an event from the default calendar by event ID."
+    },
+    {
+      "name": "sharepoint_search_items",
+      "description": "Search across everything the signed-in user can access (all SharePoint sites and OneDrive) for files and folders by name or content. Best starting point for 'find this file/folder anywhere'.\u2026"
+    },
+    {
+      "name": "sharepoint_search_sites",
+      "description": "Find SharePoint sites by keyword in their name or title."
+    },
+    {
+      "name": "sharepoint_get_site",
+      "description": "Resolve a known SharePoint site by hostname and site path, for example hostname 'contoso.sharepoint.com' and sitePath 'Acquisitions'. Returns the site ID for listing its libraries."
+    },
+    {
+      "name": "sharepoint_list_drives",
+      "description": "List a SharePoint site's document libraries. Each library is a drive; use its driveId to browse contents."
+    },
+    {
+      "name": "sharepoint_list_children",
+      "description": "List the contents of a folder in a document library. Target the folder by itemId or by path relative to the drive root; omit both for the root. Optionally filter to file extensions or folders only."
+    },
+    {
+      "name": "sharepoint_search_in_drive",
+      "description": "Search for files and folders by name within a single document library identified by driveId."
+    },
+    {
+      "name": "sharepoint_get_item_by_url",
+      "description": "Resolve a SharePoint or OneDrive sharing/browser URL to a drive item, returning its driveId and itemId for further browsing."
+    },
+    {
+      "name": "workbook_resolve",
+      "description": "Resolve an Excel workbook to a driveId + itemId pair for the other workbook tools. Provide a shareUrl, or driveId + itemId, or driveId + itemPath (path relative to the drive root). The returned\u2026"
+    },
+    {
+      "name": "workbook_list_worksheets",
+      "description": "List the worksheets (tabs) in an Excel workbook."
+    },
+    {
+      "name": "workbook_list_tables",
+      "description": "List Excel tables in a workbook, or in a single worksheet when worksheet is given."
+    },
+    {
+      "name": "workbook_get_range",
+      "description": "Read a fixed range like 'A1:O5' from a worksheet. Returns raw values, display text, cell formulas, number formats, and the resolved address."
+    },
+    {
+      "name": "workbook_get_used_range",
+      "description": "Read the used (non-empty) range of a worksheet. Use this to discover the data extent before reading or writing specific cells."
+    },
+    {
+      "name": "workbook_update_range",
+      "description": "Write values, formulas, and/or number formats into a fixed range in place. The shape of values/formulas/numberFormat must match the address dimensions. formulas cells may be literal values or\u2026"
+    },
+    {
+      "name": "workbook_add_table_row",
+      "description": "Append one or more rows to an Excel table. values is a 2D array; each inner list is one row and must match the table's column count and order. index=None appends at the end; index=0 inserts at top."
+    },
+    {
+      "name": "workbook_create_session",
+      "description": "Create a workbook session and return its sessionId. Pass that sessionId to subsequent workbook calls to batch them consistently. persistChanges=True writes to the stored file; False is a\u2026"
+    },
+    {
+      "name": "workbook_close_session",
+      "description": "Close a workbook session previously opened with workbook_create_session."
+    },
+    {
+      "name": "workbook_get_ranges",
+      "description": "Batch-read many ranges in one call. ranges is a list of {worksheet, address} objects. Each result carries values, text, formulas, numberFormat, and the resolved address, in input order. A failed\u2026"
+    },
+    {
+      "name": "workbook_update_ranges",
+      "description": "Batch-write many ranges in one call. updates is a list of objects, each with worksheet and address plus any of formulas, values, numberFormat. formulas cells may be literal values or formula strings\u2026"
+    },
+    {
+      "name": "workbook_calculate",
+      "description": "Force a recalculation of the workbook so computed cells are current before reading them back. calculationType is one of Recalculate, Full (default), or FullRebuild. Pass a sessionId to recalc inside\u2026"
+    },
+    {
+      "name": "workbook_list_names",
+      "description": "List defined names. Workbook-scoped names when worksheet is omitted; worksheet-scoped names when worksheet is given. Each name includes its 'refers to' value/formula and scope."
+    },
+    {
+      "name": "workbook_get_name_range",
+      "description": "Resolve a defined name to its range and read it. Returns the resolved address plus values, text, formulas, and numberFormat. Provide worksheet for a worksheet-scoped name; omit it for a\u2026"
+    },
+    {
+      "name": "workbook_clear_range",
+      "description": "Clear a range in place. applyTo is Contents (values/formulas only, default), Formats, or All. This edits the stored file via Excel's engine; it never deletes the workbook file."
+    },
+    {
+      "name": "workbook_copy_range",
+      "description": "Copy into address (the destination range) from sourceRange (e.g. 'Unit Mix'!A1:B5 for a cross-sheet source). copyType is one of All (default), Formulas, Values, or Formats."
+    },
+    {
+      "name": "workbook_insert_range",
+      "description": "Insert blank cells at address, shifting existing cells. shift is Down (default) or Right. Useful for insert-at-top patterns."
+    },
+    {
+      "name": "workbook_delete_range",
+      "description": "Delete the cells at address and shift remaining cells to fill the gap. shift is Up (default) or Left. To delete a whole row, pass a full-row address (e.g. 5:5 or A5:Z5) with shift=Up. This removes\u2026"
+    },
+    {
+      "name": "workbook_create_table",
+      "description": "Create an Excel table over an existing range (convert a range to a table). address is a range on the worksheet like A1:D20; hasHeaders=True (default) treats the first row as column headers. Returns\u2026"
+    },
+    {
+      "name": "workbook_sort_table",
+      "description": "Sort an Excel table by one or more columns. fields is a list of sort conditions, each {key: <zero-based column index in the table>, ascending: true|false} (an optional sortOn may be Value\u2026"
+    },
+    {
+      "name": "workbook_filter_table",
+      "description": "Apply a filter to one column of an Excel table. column is the column's header name. criteria is a Graph filter-criteria object, e.g. {filterOn: 'values', values: ['A','B']} to keep matching rows, or\u2026"
+    },
+    {
+      "name": "workbook_clear_table_filters",
+      "description": "Clear all column filters on an Excel table, restoring every row to view."
+    },
+    {
+      "name": "workbook_format_range",
+      "description": "Apply visual formatting to a range in place: fill color, font (bold/italic/underline/color/size/name), alignment (horizontal/vertical/wrapText), and borders. Colors are hex strings like #FFFF00.\u2026"
+    },
+    {
+      "name": "workbook_set_column_width",
+      "description": "Set the width of one or more columns, addressed like A:A or A:C. Pass width (in points) for a fixed width, or autofit=True to size columns to their content."
+    },
+    {
+      "name": "workbook_set_row_height",
+      "description": "Set the height of one or more rows, addressed like 1:1 or 1:10. Pass height (in points) for a fixed height, or autofit=True to size rows to their content."
+    }
+  ]
+}

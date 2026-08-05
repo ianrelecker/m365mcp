@@ -1,0 +1,86 @@
+name: Release MCPB bundle
+
+# Packs the MCP Bundle and attaches it to a GitHub Release.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag must match the "version" in manifest.json. Running this workflow
+# manually builds and uploads the bundle as a workflow artifact instead, which
+# is a convenient way to check a build without cutting a release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Read bundle version
+        id: bundle
+        run: |
+          version="$(python -c 'import json; print(json.load(open("manifest.json"))["version"])')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "filename=m365-mcp-$version.mcpb" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches manifest.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "${{ steps.bundle.outputs.version }}" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest.json version ${{ steps.bundle.outputs.version }}." >&2
+            echo "Bump version in manifest.json and pyproject.toml, or retag." >&2
+            exit 1
+          fi
+
+      - name: Check the manifest tool list is current
+        run: |
+          uv sync --extra dev
+          uv run python scripts/sync_mcpb_tools.py --check
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Validate manifest
+        run: npx --yes @anthropic-ai/mcpb@latest validate manifest.json
+
+      - name: Pack bundle
+        run: npx --yes @anthropic-ai/mcpb@latest pack . "${{ steps.bundle.outputs.filename }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.filename }}
+          path: ${{ steps.bundle.outputs.filename }}
+          if-no-files-found: error
+
+      - name: Attach bundle to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FILENAME: ${{ steps.bundle.outputs.filename }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" "$FILENAME" --clobber
