@@ -46,6 +46,7 @@ from m365_mcp.microsoft_auth import MicrosoftAuthService
 from m365_mcp.microsoft_graph import (
     DEFAULT_IMAGE_MAX_BYTES,
     DEFAULT_MAX_INLINE_IMAGES,
+    DEFAULT_MAX_TOTAL_IMAGE_BYTES,
     MicrosoftGraphClient,
 )
 from m365_mcp.sharepoint_files import (
@@ -937,6 +938,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         messageId: str,
         mailbox: str | None = None,
         maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+        maxTotalBytes: int = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
         maxImages: int = DEFAULT_MAX_INLINE_IMAGES,
         includeNonInline: bool = False,
     ) -> list[ContentBlock]:
@@ -945,6 +947,7 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             mailbox=mailbox,
             messageId=messageId,
             maxBytes=maxBytes,
+            maxTotalBytes=maxTotalBytes,
             maxImages=maxImages,
             includeNonInline=includeNonInline,
         )

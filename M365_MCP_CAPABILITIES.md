@@ -53,8 +53,10 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 - `mail_get_attachment_image` returns one image attachment as image content, so the picture itself can be viewed rather than described from its file name.
 - `mail_get_inline_images` returns every picture embedded in a message body. Each image carries the `contentId` that the HTML body references as `cid:`, which is how a picture is matched to its place in the message. Set `includeNonInline=True` to also pull regular image attachments.
-- Supported formats are PNG, JPEG, GIF, and WEBP. Other image types (BMP, TIFF, SVG, HEIC) return `unsupportedReason`; SVG can often be read as text with `mail_get_attachment_content`.
-- Both tools cap each image at `maxBytes` (default 4 MB), and `mail_get_inline_images` returns at most `maxImages` pictures (default 10) with `truncated: true` when a message has more. Oversized images are listed under `skipped` with a reason instead of failing the call.
+- Supported formats are PNG, JPEG, GIF, and WEBP — the four formats Claude can view. Other image types (BMP, TIFF, SVG, HEIC) return `unsupportedReason`; SVG can often be read as text with `mail_get_attachment_content`. Animated GIFs are not animated when viewed: only the first frame is read.
+- Both tools cap each image at `maxBytes` (default 4 MB, which encodes to ~5.3 MB of base64 and stays under the 10 MB per-image limit). `mail_get_inline_images` also caps one call at `maxTotalBytes` across all pictures (default 8 MB) and at `maxImages` pictures (default 10), setting `truncated: true` when it stops early. Oversized images are listed under `skipped` with a reason instead of failing the call.
+- Very large pictures do not need to be resized first: images above the viewing resolution are downscaled automatically, and only images beyond 8000x8000 px are rejected outright.
+- Pictures are not free context: a single full-resolution image can cost a few thousand tokens, so pull ten inline images only when the message really needs it. Lower `maxImages` when only the first picture or two matter.
 - Prefer `mail_get_inline_images` over fetching inline pictures one at a time; it reads the attachment collection once.
 - Signature logos and tracking pixels are inline images too, so expect small decorative pictures alongside meaningful ones.
 

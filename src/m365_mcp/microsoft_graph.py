@@ -158,9 +158,13 @@ IMAGE_CONTENT_TYPE_ALIASES = {
     "image/pjpeg": "image/jpeg",
     "image/x-png": "image/png",
 }
-# Well below the per-image ceiling of common MCP clients, so a message full of
-# inline pictures still fits in one tool result.
+# Claude's per-image ceiling is 10 MB of base64 on the Claude API (5 MB on
+# Bedrock/Vertex); 4 MB of raw bytes encodes to ~5.3 MB, so a single image stays
+# under both. Graph rarely returns inline pictures anywhere near this size.
 DEFAULT_IMAGE_MAX_BYTES = 4_000_000
+# Per-image caps do not bound a whole message: ten 4 MB pictures would encode to
+# ~53 MB and blow the 32 MB request limit, so cap the batch too.
+DEFAULT_MAX_TOTAL_IMAGE_BYTES = 8_000_000
 DEFAULT_MAX_INLINE_IMAGES = 10
 SAFE_ATTACHMENT_EXTENSIONS = {
     ".csv",
@@ -945,6 +949,7 @@ class MicrosoftGraphClient:
         mailbox: str | None = None,
         messageId: str,
         maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+        maxTotalBytes: int = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
         maxImages: int = DEFAULT_MAX_INLINE_IMAGES,
         includeNonInline: bool = False,
     ) -> MailInlineImagesResult:
@@ -957,6 +962,7 @@ class MicrosoftGraphClient:
         images: list[AttachmentImage] = []
         skipped: list[SkippedAttachment] = []
         truncated = False
+        total_bytes = 0
 
         for raw in listed.get("value", []):
             attachment = self._map_attachment(raw)
@@ -992,6 +998,11 @@ class MicrosoftGraphClient:
                 )
                 continue
 
+            if total_bytes + len(content_bytes) > maxTotalBytes:
+                truncated = True
+                break
+
+            total_bytes += len(content_bytes)
             images.append(self._build_attachment_image(attachment, content_bytes))
 
         return MailInlineImagesResult(

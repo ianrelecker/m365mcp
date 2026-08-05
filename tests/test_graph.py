@@ -953,6 +953,12 @@ async def test_attachment_images_and_inline_pictures() -> None:
     assert [image.attachment.id for image in capped.images] == ["inline-png"]
     assert capped.truncated is True
 
+    # The batch budget stops before a picture that would overflow it, even
+    # though each picture on its own is under maxBytes.
+    budgeted = await graph.get_inline_images(messageId="msg-1", maxTotalBytes=14)
+    assert [image.attachment.id for image in budgeted.images] == ["inline-png"]
+    assert budgeted.truncated is True
+
     # Text attachment reads point at the image tools instead of failing silently.
     image_via_text_tool = await graph.get_attachment_content(
         messageId="msg-1",
