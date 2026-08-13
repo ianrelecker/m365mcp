@@ -43,11 +43,32 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 ## Attachments
 
-- Use `mail_list_attachments` before reading attachment content.
+- Use `mail_list_attachments` before reading attachment content. Results include `contentId` and `isInline` so inline pictures can be told apart from real attachments.
 - `mail_get_attachment_content` returns content for small text-like files and extracts text from small PDFs.
-- PDF extraction is text-only. Scanned/image-only PDFs need OCR and return `unsupportedReason`.
 - Large, binary, item, or reference attachments return metadata with `unsupportedReason`.
 - The server does not save attachments to disk.
+
+## PDFs
+
+- Two ways to read a PDF, and the choice matters:
+  - `mail_get_attachment_content` pulls out the text layer. Cheap and exact for a plain prose document, and the right default when only the words matter.
+  - `mail_get_attachment_pdf_pages` renders pages to images so the pages can actually be looked at. Use it for invoices, statements, forms, contracts with signatures or stamps, anything with tables, charts, or multi-column layout, and any scanned document — text extraction either loses the structure or returns nothing at all.
+- A scanned or image-only PDF has no text layer: `mail_get_attachment_content` reports that it needs OCR, while `mail_get_attachment_pdf_pages` shows the pages directly and needs no OCR step.
+- Page rendering returns `maxPages` pages (default 5) starting at `firstPage` (default 1), with `pageCount` for the whole document and `truncated: true` when pages remain. Page through a long document by raising `firstPage` rather than raising `maxPages` — pages are expensive in tokens.
+- Prefer targeting the pages that matter. If the text layer says the totals are on page 6, render page 6 rather than the first five.
+- `longEdge` (default 1600 px) controls rendering resolution. Raise it for dense small print; lower it to save tokens on a document that is mostly headings.
+- Password-protected or damaged PDFs return `unsupportedReason` rather than failing the call.
+
+## Pictures
+
+- `mail_get_attachment_image` returns one image attachment as image content, so the picture itself can be viewed rather than described from its file name.
+- `mail_get_inline_images` returns every picture embedded in a message body. Each image carries the `contentId` that the HTML body references as `cid:`, which is how a picture is matched to its place in the message. Set `includeNonInline=True` to also pull regular image attachments.
+- Supported formats are PNG, JPEG, GIF, and WEBP — the four formats Claude can view. Other image types (BMP, TIFF, SVG, HEIC) return `unsupportedReason`; SVG can often be read as text with `mail_get_attachment_content`. Animated GIFs are not animated when viewed: only the first frame is read.
+- Both tools cap each image at `maxBytes` (default 4 MB, which encodes to ~5.3 MB of base64 and stays under the 10 MB per-image limit). `mail_get_inline_images` also caps one call at `maxTotalBytes` across all pictures (default 8 MB) and at `maxImages` pictures (default 10), setting `truncated: true` when it stops early. Oversized images are listed under `skipped` with a reason instead of failing the call.
+- Very large pictures do not need to be resized first: images above the viewing resolution are downscaled automatically, and only images beyond 8000x8000 px are rejected outright.
+- Pictures are not free context: a single full-resolution image can cost a few thousand tokens, so pull ten inline images only when the message really needs it. Lower `maxImages` when only the first picture or two matter.
+- Prefer `mail_get_inline_images` over fetching inline pictures one at a time; it reads the attachment collection once.
+- Signature logos and tracking pixels are inline images too, so expect small decorative pictures alongside meaningful ones.
 
 ## Threads And Replies
 

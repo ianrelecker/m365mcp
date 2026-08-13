@@ -1,4 +1,5 @@
 import contextlib
+import json
 import socket
 import sys
 from collections.abc import Callable, Iterator, Sequence
@@ -11,7 +12,7 @@ import anyio
 import httpx
 import uvicorn
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ContentBlock
+from mcp.types import ContentBlock, ImageContent, TextContent
 from pydantic import Field
 
 from m365_mcp.audit import LocalAuditLogger
@@ -42,7 +43,15 @@ from m365_mcp.excel_workbook import (
     WorkbookWriteResult,
 )
 from m365_mcp.microsoft_auth import MicrosoftAuthService
-from m365_mcp.microsoft_graph import MicrosoftGraphClient
+from m365_mcp.microsoft_graph import (
+    DEFAULT_IMAGE_MAX_BYTES,
+    DEFAULT_MAX_INLINE_IMAGES,
+    DEFAULT_MAX_PDF_PAGES,
+    DEFAULT_MAX_TOTAL_IMAGE_BYTES,
+    DEFAULT_PDF_MAX_BYTES,
+    DEFAULT_PDF_PAGE_LONG_EDGE,
+    MicrosoftGraphClient,
+)
 from m365_mcp.sharepoint_files import (
     DriveItemInfo,
     DriveItemsResult,
@@ -52,6 +61,7 @@ from m365_mcp.sharepoint_files import (
     SitesResult,
 )
 from m365_mcp.models import (
+    AttachmentImage,
     AuthStatusResult,
     CalendarCreateEventResult,
     CalendarDeleteEventResult,
@@ -65,12 +75,15 @@ from m365_mcp.models import (
     ContactsSearchResult,
     M365CapabilitiesResult,
     MailAttachmentContentResult,
+    MailAttachmentImageResult,
+    MailAttachmentPdfResult,
     MailCategoryResult,
     MailCheckInboxResult,
     MailCreateDraftResult,
     MailFolderMutationResult,
     MailFolderTreeResult,
     MailGetResult,
+    MailInlineImagesResult,
     MailListAttachmentsResult,
     MailListCategoriesResult,
     MailListDraftsResult,
@@ -85,6 +98,7 @@ from m365_mcp.models import (
     MailSendResult,
     MailThreadResult,
     MailUpdateMessageResult,
+    PdfPageImage,
 )
 
 
@@ -303,6 +317,45 @@ def _can_bind_localhost(port: int) -> bool:
 
 def _load_capabilities_text() -> str:
     return CAPABILITIES_PATH.read_text("utf-8")
+
+
+def _image_content_blocks(
+    result: MailAttachmentImageResult | MailInlineImagesResult | MailAttachmentPdfResult,
+    field: str,
+) -> list[ContentBlock]:
+    """Render a result carrying base64 pictures as content blocks.
+
+    ``field`` names the attribute holding the payloads — one picture or a list
+    of them. The base64 data only travels in the image blocks; the text block
+    carries the metadata (names, content IDs, page numbers, skip reasons) with
+    ``dataBase64`` dropped so the encoded bytes are not repeated as text.
+    """
+
+    def without_payload(picture: AttachmentImage | PdfPageImage) -> dict[str, Any]:
+        return picture.model_dump(mode="json", exclude={"dataBase64"})
+
+    value = getattr(result, field)
+    summary = result.model_dump(mode="json", exclude={field})
+    pictures: list[AttachmentImage | PdfPageImage]
+    if isinstance(value, list):
+        pictures = [picture for picture in value if picture is not None]
+        summary[field] = [without_payload(picture) for picture in pictures]
+    else:
+        pictures = [value] if value is not None else []
+        summary[field] = without_payload(value) if value is not None else None
+
+    blocks: list[ContentBlock] = [
+        TextContent(type="text", text=json.dumps(summary, indent=2))
+    ]
+    blocks.extend(
+        ImageContent(
+            type="image",
+            data=picture.dataBase64,
+            mimeType=picture.mimeType,
+        )
+        for picture in pictures
+    )
+    return blocks
 
 
 def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
@@ -853,6 +906,94 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             maxBytes=maxBytes,
             maxChars=maxChars,
         )
+
+    @mcp.tool(
+        name="mail_get_attachment_image",
+        description=(
+            "View an image attachment. Returns the picture itself as image "
+            "content so it can be read directly. Supports PNG, JPEG, GIF, and "
+            "WEBP; other types return metadata with an unsupportedReason."
+        ),
+        structured_output=False,
+    )
+    async def mail_get_attachment_image(
+        messageId: str,
+        attachmentId: str,
+        mailbox: str | None = None,
+        maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+    ) -> list[ContentBlock]:
+        runtime = runtime_provider.get()
+        result = await runtime.graph.get_attachment_image(
+            mailbox=mailbox,
+            messageId=messageId,
+            attachmentId=attachmentId,
+            maxBytes=maxBytes,
+        )
+        return _image_content_blocks(result, "image")
+
+    @mcp.tool(
+        name="mail_get_inline_images",
+        description=(
+            "View the pictures embedded in a message body. Returns each inline "
+            "image as image content, keyed by the contentId that the HTML body "
+            "references as cid:. Set includeNonInline to also pull regular "
+            "image attachments."
+        ),
+        structured_output=False,
+    )
+    async def mail_get_inline_images(
+        messageId: str,
+        mailbox: str | None = None,
+        maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
+        maxTotalBytes: int = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
+        maxImages: int = DEFAULT_MAX_INLINE_IMAGES,
+        includeNonInline: bool = False,
+    ) -> list[ContentBlock]:
+        runtime = runtime_provider.get()
+        result = await runtime.graph.get_inline_images(
+            mailbox=mailbox,
+            messageId=messageId,
+            maxBytes=maxBytes,
+            maxTotalBytes=maxTotalBytes,
+            maxImages=maxImages,
+            includeNonInline=includeNonInline,
+        )
+        return _image_content_blocks(result, "images")
+
+    @mcp.tool(
+        name="mail_get_attachment_pdf_pages",
+        description=(
+            "Look at the pages of a PDF attachment. Renders each page to an "
+            "image so layout, tables, charts, signatures, stamps, and scanned "
+            "documents can be read directly. Returns maxPages pages starting "
+            "at firstPage; page through longer documents by raising firstPage. "
+            "Prefer mail_get_attachment_content when the PDF is plain text and "
+            "only its words are needed — it is far cheaper."
+        ),
+        structured_output=False,
+    )
+    async def mail_get_attachment_pdf_pages(
+        messageId: str,
+        attachmentId: str,
+        mailbox: str | None = None,
+        firstPage: int = 1,
+        maxPages: int = DEFAULT_MAX_PDF_PAGES,
+        longEdge: int = DEFAULT_PDF_PAGE_LONG_EDGE,
+        maxBytes: int = DEFAULT_PDF_MAX_BYTES,
+        maxTotalBytes: int = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
+    ) -> list[ContentBlock]:
+        runtime = runtime_provider.get()
+        result = await runtime.graph.get_attachment_pdf_pages(
+            mailbox=mailbox,
+            messageId=messageId,
+            attachmentId=attachmentId,
+            firstPage=firstPage,
+            maxPages=maxPages,
+            longEdge=longEdge,
+            maxBytes=maxBytes,
+            maxTotalBytes=maxTotalBytes,
+        )
+        return _image_content_blocks(result, "pages")
 
     @mcp.tool(
         name="mail_get_thread",

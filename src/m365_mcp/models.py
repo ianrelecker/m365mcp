@@ -216,6 +216,7 @@ class AttachmentInfo(AppModel):
     contentType: str | None = None
     size: int | None = None
     isInline: bool = False
+    contentId: str | None = None
     lastModifiedDateTime: str | None = None
     attachmentType: str | None = None
 
@@ -232,6 +233,57 @@ class MailAttachmentContentResult(AppModel):
     attachment: AttachmentInfo
     content: str | None = None
     encoding: str | None = None
+    truncated: bool = False
+    unsupportedReason: str | None = None
+
+
+class AttachmentImage(AppModel):
+    """A decoded image attachment, ready to hand to the model as image content."""
+
+    attachment: AttachmentInfo
+    mimeType: str
+    dataBase64: str
+    byteSize: int
+
+
+class SkippedAttachment(AppModel):
+    attachment: AttachmentInfo
+    reason: str
+
+
+class MailAttachmentImageResult(AppModel):
+    mailbox: str
+    messageId: str
+    attachment: AttachmentInfo
+    image: AttachmentImage | None = None
+    unsupportedReason: str | None = None
+
+
+class MailInlineImagesResult(AppModel):
+    mailbox: str
+    messageId: str
+    images: list[AttachmentImage]
+    skipped: list[SkippedAttachment] = Field(default_factory=list)
+    truncated: bool = False
+
+
+class PdfPageImage(AppModel):
+    """One rendered PDF page, ready to hand to the model as image content."""
+
+    pageNumber: int
+    mimeType: str
+    dataBase64: str
+    byteSize: int
+    widthPx: int
+    heightPx: int
+
+
+class MailAttachmentPdfResult(AppModel):
+    mailbox: str
+    messageId: str
+    attachment: AttachmentInfo
+    pageCount: int | None = None
+    pages: list[PdfPageImage] = Field(default_factory=list)
     truncated: bool = False
     unsupportedReason: str | None = None
 

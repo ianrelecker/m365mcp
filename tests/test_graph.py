@@ -810,6 +810,169 @@ async def test_attachments_threads_and_categories() -> None:
 
 
 @pytest.mark.anyio
+async def test_attachment_images_and_inline_pictures() -> None:
+    png_payload = base64.b64encode(b"\x89PNG\r\n\x1a\nlogo").decode("ascii")
+    jpeg_bytes = b"\xff\xd8\xff\xe0jpeg-body"
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+
+        if request.url.path.endswith("/messages/msg-1/attachments"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "inline-png",
+                            "name": "logo.png",
+                            "contentType": "image/png",
+                            "size": 12,
+                            "isInline": True,
+                            "contentId": "logo@01D9",
+                            "contentBytes": png_payload,
+                        },
+                        {
+                            # Inline by content ID only, and Graph omitted
+                            # contentBytes so the bytes come from /$value.
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "inline-jpg",
+                            "name": "signature.JPG",
+                            "contentType": "application/octet-stream",
+                            "size": len(jpeg_bytes),
+                            "isInline": False,
+                            "contentId": "sig@01D9",
+                        },
+                        {
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "inline-huge",
+                            "name": "banner.png",
+                            "contentType": "image/png",
+                            "size": 9_000_000,
+                            "isInline": True,
+                            "contentId": "banner@01D9",
+                        },
+                        {
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "attached-png",
+                            "name": "chart.png",
+                            "contentType": "image/png",
+                            "size": 12,
+                            "isInline": False,
+                            "contentBytes": png_payload,
+                        },
+                        {
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "notes",
+                            "name": "notes.txt",
+                            "contentType": "text/plain",
+                            "size": 4,
+                            "isInline": False,
+                        },
+                    ]
+                },
+            )
+
+        if request.url.path.endswith("/messages/msg-1/attachments/inline-jpg/$value"):
+            return httpx.Response(200, content=jpeg_bytes)
+
+        if request.url.path.endswith("/messages/msg-1/attachments/inline-png"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "inline-png",
+                    "name": "logo.png",
+                    "contentType": "image/png",
+                    "size": 12,
+                    "isInline": True,
+                    "contentId": "logo@01D9",
+                    "contentBytes": png_payload,
+                },
+            )
+
+        if request.url.path.endswith("/messages/msg-1/attachments/notes"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "notes",
+                    "name": "notes.txt",
+                    "contentType": "text/plain",
+                    "size": 4,
+                },
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    single = await graph.get_attachment_image(
+        messageId="msg-1",
+        attachmentId="inline-png",
+    )
+    assert single.unsupportedReason is None
+    assert single.image is not None
+    assert single.image.mimeType == "image/png"
+    assert single.image.dataBase64 == png_payload
+    assert single.image.byteSize == 12
+    assert single.image.attachment.contentId == "logo@01D9"
+
+    not_an_image = await graph.get_attachment_image(
+        messageId="msg-1",
+        attachmentId="notes",
+    )
+    assert not_an_image.image is None
+    assert "not a PNG" in not_an_image.unsupportedReason
+
+    inline = await graph.get_inline_images(messageId="msg-1")
+    assert [image.attachment.id for image in inline.images] == [
+        "inline-png",
+        "inline-jpg",
+    ]
+    # Content type was generic, so the mime type comes from the file extension.
+    assert inline.images[1].mimeType == "image/jpeg"
+    assert base64.b64decode(inline.images[1].dataBase64) == jpeg_bytes
+    assert [skipped.attachment.id for skipped in inline.skipped] == ["inline-huge"]
+    assert "maxBytes" in inline.skipped[0].reason
+    assert inline.truncated is False
+
+    with_attachments = await graph.get_inline_images(
+        messageId="msg-1",
+        includeNonInline=True,
+    )
+    assert [image.attachment.id for image in with_attachments.images] == [
+        "inline-png",
+        "inline-jpg",
+        "attached-png",
+    ]
+
+    capped = await graph.get_inline_images(messageId="msg-1", maxImages=1)
+    assert [image.attachment.id for image in capped.images] == ["inline-png"]
+    assert capped.truncated is True
+
+    # The batch budget stops before a picture that would overflow it, even
+    # though each picture on its own is under maxBytes.
+    budgeted = await graph.get_inline_images(messageId="msg-1", maxTotalBytes=14)
+    assert [image.attachment.id for image in budgeted.images] == ["inline-png"]
+    assert budgeted.truncated is True
+
+    # Text attachment reads point at the image tools instead of failing silently.
+    image_via_text_tool = await graph.get_attachment_content(
+        messageId="msg-1",
+        attachmentId="inline-png",
+    )
+    assert image_via_text_tool.content is None
+    assert "mail_get_attachment_image" in image_via_text_tool.unsupportedReason
+
+    assert "/messages/msg-1/attachments/inline-huge/$value" not in requested_paths
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakePage:
         def __init__(self, text: str) -> None:
@@ -854,6 +1017,199 @@ async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -
     assert content.content == "--- Page 1 ---\nFirst"
     assert content.truncated is True
     assert "maxChars=20" in content.unsupportedReason
+
+    await client.aclose()
+
+
+def _single_page_pdf(text: bytes = b"INVOICE 12345", pages: int = 2) -> bytes:
+    """Build a small valid PDF so rendering runs against real pdfium."""
+
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"",  # placeholder for the page tree, filled in below
+    ]
+    kids: list[bytes] = []
+    for page_index in range(pages):
+        page_obj = len(objects) + 1
+        content_obj = page_obj + 1
+        kids.append(b"%d 0 R" % page_obj)
+        objects.append(
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
+            % (2 + pages * 2 + 1, content_obj)
+        )
+        stream = b"BT /F1 36 Tf 72 700 Td (%s p%d) Tj ET" % (text, page_index + 1)
+        objects.append(
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream"
+        )
+    objects[1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(kids), pages)
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
+    return bytes(out)
+
+
+@pytest.mark.anyio
+async def test_pdf_attachment_page_rendering() -> None:
+    pdf_bytes = _single_page_pdf(pages=3)
+    payload = base64.b64encode(pdf_bytes).decode("ascii")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments/pdf-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "pdf-1",
+                    "name": "invoice.pdf",
+                    "contentType": "application/pdf",
+                    "size": len(pdf_bytes),
+                    "contentBytes": payload,
+                },
+            )
+
+        if request.url.path.endswith("/messages/msg-1/attachments/notes"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "notes",
+                    "name": "notes.txt",
+                    "contentType": "text/plain",
+                    "size": 4,
+                },
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    rendered = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        maxPages=2,
+    )
+    assert rendered.unsupportedReason is None
+    assert rendered.pageCount == 3
+    assert [page.pageNumber for page in rendered.pages] == [1, 2]
+    assert rendered.truncated is True
+    first = rendered.pages[0]
+    assert first.mimeType == "image/jpeg"
+    assert first.byteSize > 0
+    # Long edge honours the requested target, aspect ratio preserved.
+    assert max(first.widthPx, first.heightPx) == 1600
+    assert base64.b64decode(first.dataBase64)[:2] == b"\xff\xd8"
+
+    paged = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        firstPage=3,
+    )
+    assert [page.pageNumber for page in paged.pages] == [3]
+    assert paged.truncated is False
+
+    smaller = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        maxPages=1,
+        longEdge=400,
+    )
+    assert max(smaller.pages[0].widthPx, smaller.pages[0].heightPx) == 400
+    assert smaller.pages[0].byteSize < first.byteSize
+
+    # The byte budget still yields the first page rather than nothing.
+    budgeted = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        maxTotalBytes=1,
+    )
+    assert [page.pageNumber for page in budgeted.pages] == [1]
+    assert budgeted.truncated is True
+
+    beyond_end = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+        firstPage=99,
+    )
+    assert beyond_end.pages == []
+    assert "has 3 pages" in beyond_end.unsupportedReason
+
+    not_pdf = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="notes",
+    )
+    assert not_pdf.pages == []
+    assert not_pdf.unsupportedReason == "Attachment is not a PDF"
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_pdf_page_rendering_reports_damaged_file() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "pdf-bad",
+                "name": "broken.pdf",
+                "contentType": "application/pdf",
+                "size": 9,
+                "contentBytes": base64.b64encode(b"not a pdf").decode("ascii"),
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    result = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-bad",
+    )
+    assert result.pages == []
+    assert "Could not open PDF" in result.unsupportedReason
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_pdf_page_rendering_without_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(graph_module, "pypdfium2", None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "pdf-1",
+                "name": "invoice.pdf",
+                "contentType": "application/pdf",
+                "size": 128,
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    result = await graph.get_attachment_pdf_pages(
+        messageId="msg-1",
+        attachmentId="pdf-1",
+    )
+    assert result.pages == []
+    assert "pypdfium2" in result.unsupportedReason
 
     await client.aclose()
 
