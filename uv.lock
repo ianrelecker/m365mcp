@@ -136,7 +136,7 @@ wheels = [
 
 [[package]]
 name = "claude-m365-mcp"
-version = "0.1.0"
+version = "26.03"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

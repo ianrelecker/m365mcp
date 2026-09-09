@@ -2,16 +2,18 @@ name: Release MCPB bundle
 
 # Packs the MCP Bundle and attaches it to a GitHub Release.
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag V26.03 && git push origin V26.03
 #
-# The tag must match the "version" in manifest.json. Running this workflow
-# manually builds and uploads the bundle as a workflow artifact instead, which
-# is a convenient way to check a build without cutting a release.
+# The tag must match the "version" in manifest.json (v26.03 and V26.03 both
+# work). Running this workflow manually builds and uploads the bundle as a
+# workflow artifact instead, which is a convenient way to check a build
+# without cutting a release.
 
 on:
   push:
     tags:
       - "v*"
+      - "V*"
   workflow_dispatch:
 
 permissions:
@@ -44,7 +46,7 @@ jobs:
       - name: Check the tag matches manifest.json
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${GITHUB_REF_NAME#[vV]}"
           if [ "$tag_version" != "${{ steps.bundle.outputs.version }}" ]; then
             echo "Tag $GITHUB_REF_NAME does not match manifest.json version ${{ steps.bundle.outputs.version }}." >&2
             echo "Bump version in manifest.json and pyproject.toml, or retag." >&2

@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "m365-mcp",
   "display_name": "Microsoft 365",
-  "version": "0.1.0",
+  "version": "26.03",
   "description": "Local MCP server for one Microsoft 365 user: mail, folders, rules, categories, contacts, calendar, SharePoint browsing, and in-place Excel editing.",
   "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, send, move, flag, and categorize mail, including shared/delegated mailboxes.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- View image attachments and inline pictures embedded in message bodies.\n- Look at PDF attachments page by page, including scanned documents, by rendering pages to images.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders (read-only).\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
   "author": {

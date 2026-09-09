@@ -317,8 +317,8 @@ uv run python scripts/sync_mcpb_tools.py
 To publish a bundle, bump `version` in both `pyproject.toml` and `manifest.json`, then push a matching tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag V26.03
+git push origin V26.03
 ```
 
 The [Release MCPB bundle](.github/workflows/release-mcpb.yml) workflow verifies the tag matches `manifest.json`, checks the tool list is in sync, runs the tests, packs the bundle, and attaches it to the GitHub Release for that tag. Running the workflow manually from the Actions tab builds the bundle and uploads it as a workflow artifact without creating a release.
