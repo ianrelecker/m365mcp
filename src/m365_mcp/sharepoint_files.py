@@ -1,4 +1,4 @@
-"""Read-only SharePoint / OneDrive browsing for the M365 MCP server.
+"""SharePoint / OneDrive browsing and sharing for the M365 MCP server.
 
 Lets Claude find folders anywhere the signed-in user has access and list their
 contents (Excel, PDF, etc.) — without mounting the folder locally. Pairs with
@@ -10,10 +10,10 @@ private _request with identical error handling, typed pydantic results.
 
 Scopes (delegated):
     Sites.Read.All   +  Files.ReadWrite.All
-  This client is read-only and would work with Files.Read.All, but the
-  companion Workbook client (excel_workbook.py) needs Files.ReadWrite.All to
-  edit, so the shared config requests the write file scope and the read-only
-  Sites.Read.All. No SharePoint *write* (Sites.ReadWrite.All) scope is used.
+  Browsing would work with Files.Read.All, but sharing and the companion
+  Workbook client (excel_workbook.py) need Files.ReadWrite.All. The shared
+  config also requests the read-only Sites.Read.All; no SharePoint-wide write
+  scope (Sites.ReadWrite.All) is used.
 
 Endpoint reference (Graph v1.0):
     Search sites:        GET  /sites?search={q}
@@ -24,7 +24,11 @@ Endpoint reference (Graph v1.0):
                          GET  /drives/{driveId}/root:/{path}:/children
     Search in a drive:   GET  /drives/{driveId}/root/search(q='{q}')
     Search everywhere:   POST /search/query   (entityTypes: driveItem)
-    Resolve a link:      GET  /shares/{u!encoded}/driveItem
+    Resolve a link:      GET    /shares/{u!encoded}/driveItem
+    List permissions:    GET    /drives/{driveId}/items/{itemId}/permissions
+    Create link:         POST   /drives/{driveId}/items/{itemId}/createLink
+    Grant access:        POST   /drives/{driveId}/items/{itemId}/invite
+    Revoke permission:   DELETE /drives/{driveId}/items/{itemId}/permissions/{id}
 """
 
 from __future__ import annotations
@@ -88,6 +92,58 @@ class DriveItemsResult(BaseModel):
     path: str | None = None
     items: list[DriveItemInfo] = Field(default_factory=list)
     nextLink: str | None = None
+
+
+class SharingIdentity(BaseModel):
+    identityType: str | None = None
+    id: str | None = None
+    displayName: str | None = None
+    email: str | None = None
+    loginName: str | None = None
+
+
+class SharingPermissionInfo(BaseModel):
+    permissionId: str
+    roles: list[str] = Field(default_factory=list)
+    linkType: str | None = None
+    linkScope: str | None = None
+    shareUrl: str | None = None
+    expirationDateTime: str | None = None
+    inherited: bool = False
+    grantedTo: list[SharingIdentity] = Field(default_factory=list)
+
+
+class SharingPermissionsResult(BaseModel):
+    driveId: str
+    itemId: str
+    permissions: list[SharingPermissionInfo] = Field(default_factory=list)
+    nextLink: str | None = None
+
+
+class SharingPermissionResult(BaseModel):
+    driveId: str
+    itemId: str
+    permission: SharingPermissionInfo
+
+
+class SharingGrantResult(BaseModel):
+    driveId: str
+    itemId: str
+    permissions: list[SharingPermissionInfo] = Field(default_factory=list)
+    failures: list["SharingGrantFailure"] = Field(default_factory=list)
+
+
+class SharingGrantFailure(BaseModel):
+    recipient: str | None = None
+    code: str | None = None
+    message: str
+
+
+class SharingRevokeResult(BaseModel):
+    driveId: str
+    itemId: str
+    permissionId: str
+    revoked: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -245,6 +301,137 @@ class SharePointFilesClient:
         parent = data.get("parentReference") or {}
         return self._map_item(data, parent.get("driveId"))
 
+    # ---- sharing ---------------------------------------------------------- #
+    async def list_permissions(
+        self, *, driveId: str, itemId: str
+    ) -> SharingPermissionsResult:
+        """List the effective permissions visible to the signed-in user."""
+        data = await self._request(f"{self._item_path(driveId, itemId)}/permissions")
+        raw_permissions = list(data.get("value", []))
+        next_link = data.get("@odata.nextLink")
+        seen_links: set[str] = set()
+        while next_link:
+            if next_link in seen_links:
+                raise RuntimeError("Microsoft Graph returned a repeated permissions page.")
+            seen_links.add(next_link)
+            data = await self._request(next_link)
+            raw_permissions.extend(data.get("value", []))
+            next_link = data.get("@odata.nextLink")
+        return SharingPermissionsResult(
+            driveId=driveId,
+            itemId=itemId,
+            permissions=[
+                self._map_permission(permission)
+                for permission in raw_permissions
+            ],
+            nextLink=None,
+        )
+
+    async def create_link(
+        self,
+        *,
+        driveId: str,
+        itemId: str,
+        linkType: str,
+        scope: str,
+        expirationDateTime: str | None = None,
+    ) -> SharingPermissionResult:
+        """Create or return an existing sharing link for an item."""
+        body: dict[str, Any] = {
+            "type": linkType,
+            "scope": scope,
+            "retainInheritedPermissions": True,
+        }
+        if expirationDateTime:
+            body["expirationDateTime"] = expirationDateTime
+        data = await self._request(
+            f"{self._item_path(driveId, itemId)}/createLink",
+            method="POST",
+            json_body=body,
+        )
+        return SharingPermissionResult(
+            driveId=driveId,
+            itemId=itemId,
+            permission=self._map_permission(data),
+        )
+
+    async def grant_access(
+        self,
+        *,
+        driveId: str,
+        itemId: str,
+        recipients: list[str],
+        role: str,
+        sendInvitation: bool = False,
+        message: str | None = None,
+    ) -> SharingGrantResult:
+        """Grant named recipients read or write access to an item."""
+        addresses = [address.strip() for address in recipients if address.strip()]
+        if not addresses:
+            raise ValueError("At least one recipient email address is required.")
+        body: dict[str, Any] = {
+            "recipients": [{"email": address} for address in addresses],
+            "roles": [role],
+            "requireSignIn": True,
+            "sendInvitation": sendInvitation,
+            "retainInheritedPermissions": True,
+        }
+        if message:
+            body["message"] = message
+        data = await self._request(
+            f"{self._item_path(driveId, itemId)}/invite",
+            method="POST",
+            json_body=body,
+        )
+        values = data.get("value", []) if isinstance(data, dict) else []
+        permissions: list[SharingPermissionInfo] = []
+        failures: list[SharingGrantFailure] = []
+        for index, value in enumerate(values):
+            error = value.get("error") if isinstance(value, dict) else None
+            permission = self._map_permission(value)
+            if permission.permissionId or permission.roles or permission.grantedTo:
+                permissions.append(permission)
+            if isinstance(error, dict):
+                recipient = (value.get("recipient") or {}).get("email")
+                if not recipient:
+                    recipient = next(
+                        (
+                            identity.email
+                            for identity in permission.grantedTo
+                            if identity.email
+                        ),
+                        None,
+                    )
+                failures.append(
+                    SharingGrantFailure(
+                        recipient=recipient
+                        or (addresses[index] if index < len(addresses) else None),
+                        code=error.get("code"),
+                        message=str(error.get("message") or "Unknown Graph error"),
+                    )
+                )
+        return SharingGrantResult(
+            driveId=driveId,
+            itemId=itemId,
+            permissions=permissions,
+            failures=failures,
+        )
+
+    async def revoke_permission(
+        self, *, driveId: str, itemId: str, permissionId: str
+    ) -> SharingRevokeResult:
+        """Revoke a non-inherited direct permission or entire sharing link."""
+        await self._request(
+            f"{self._item_path(driveId, itemId)}/permissions/"
+            f"{quote(permissionId, safe='')}",
+            method="DELETE",
+        )
+        return SharingRevokeResult(
+            driveId=driveId,
+            itemId=itemId,
+            permissionId=permissionId,
+        )
+
     # ---- mapping / helpers ------------------------------------------------ #
     @staticmethod
     def _map_site(data: dict[str, Any]) -> SiteInfo:
@@ -274,6 +461,57 @@ class SharePointFilesClient:
             webUrl=data.get("webUrl"),
             lastModifiedDateTime=data.get("lastModifiedDateTime"),
             path=parent.get("path"),
+        )
+
+    @classmethod
+    def _map_permission(cls, data: dict[str, Any]) -> SharingPermissionInfo:
+        link = data.get("link") or {}
+        identities: list[SharingIdentity] = []
+        raw_identities: list[dict[str, Any]] = []
+        if data.get("grantedToV2"):
+            raw_identities.append(data["grantedToV2"])
+        raw_identities.extend(data.get("grantedToIdentitiesV2") or [])
+        invitation = data.get("invitation") or {}
+        if invitation.get("email"):
+            raw_identities.append({"user": {"email": invitation["email"]}})
+        for raw in raw_identities:
+            for identity_type in (
+                "user",
+                "siteUser",
+                "group",
+                "siteGroup",
+                "application",
+                "siteApplication",
+                "device",
+            ):
+                identity = raw.get(identity_type)
+                if not isinstance(identity, dict):
+                    continue
+                identities.append(
+                    SharingIdentity(
+                        identityType=identity_type,
+                        id=identity.get("id"),
+                        displayName=identity.get("displayName"),
+                        email=identity.get("email"),
+                        loginName=identity.get("loginName"),
+                    )
+                )
+        return SharingPermissionInfo(
+            permissionId=str(data.get("id") or ""),
+            roles=[str(role) for role in data.get("roles", [])],
+            linkType=link.get("type"),
+            linkScope=link.get("scope"),
+            shareUrl=link.get("webUrl"),
+            expirationDateTime=data.get("expirationDateTime"),
+            inherited=data.get("inheritedFrom") is not None,
+            grantedTo=identities,
+        )
+
+    @staticmethod
+    def _item_path(driveId: str, itemId: str) -> str:
+        return (
+            f"/drives/{quote(driveId, safe='')}/items/"
+            f"{quote(itemId, safe='')}"
         )
 
     @staticmethod

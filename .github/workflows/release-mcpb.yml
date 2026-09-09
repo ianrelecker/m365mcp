@@ -2,9 +2,9 @@ name: Release MCPB bundle
 
 # Packs the MCP Bundle and attaches it to a GitHub Release.
 #
-#   git tag V26.03 && git push origin V26.03
+#   git tag V26.04 && git push origin V26.04
 #
-# The tag must match the "version" in manifest.json (v26.03 and V26.03 both
+# The tag must match the "version" in manifest.json (v26.04 and V26.04 both
 # work). Running this workflow manually builds and uploads the bundle as a
 # workflow artifact instead, which is a convenient way to check a build
 # without cutting a release.

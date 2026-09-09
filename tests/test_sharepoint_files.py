@@ -264,6 +264,208 @@ async def test_get_item_by_share_url_encodes_url() -> None:
 
 
 @pytest.mark.anyio
+async def test_list_permissions_maps_links_recipients_and_inheritance() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1.0/next":
+            return httpx.Response(200, json={"value": []})
+        assert request.url.path == "/v1.0/drives/drive-1/items/item-1/permissions"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "perm-link",
+                        "roles": ["read"],
+                        "link": {
+                            "type": "view",
+                            "scope": "organization",
+                            "webUrl": "https://contoso.sharepoint.com/share/link",
+                        },
+                        "expirationDateTime": "2026-10-01T00:00:00Z",
+                    },
+                    {
+                        "id": "perm-user",
+                        "roles": ["write"],
+                        "grantedToV2": {
+                            "user": {
+                                "id": "user-1",
+                                "displayName": "Ada Lovelace",
+                                "email": "ada@example.com",
+                            }
+                        },
+                        "grantedToIdentitiesV2": [
+                            {
+                                "group": {
+                                    "id": "group-1",
+                                    "displayName": "Project Team",
+                                }
+                            }
+                        ],
+                        "inheritedFrom": {"id": "parent-1"},
+                    },
+                ],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/next",
+            },
+        )
+
+    client, http_client = _make_client(handler)
+    result = await client.list_permissions(driveId="drive-1", itemId="item-1")
+    link, user = result.permissions
+    assert link.permissionId == "perm-link"
+    assert link.linkType == "view"
+    assert link.linkScope == "organization"
+    assert link.shareUrl == "https://contoso.sharepoint.com/share/link"
+    assert user.inherited is True
+    assert user.grantedTo[0].email == "ada@example.com"
+    assert user.grantedTo[1].identityType == "group"
+    assert user.grantedTo[1].displayName == "Project Team"
+    assert result.nextLink is None
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_create_link_preserves_inheritance_and_maps_result() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1.0/drives/drive-1/items/item-1/createLink"
+        assert json.loads(request.content) == {
+            "type": "view",
+            "scope": "organization",
+            "retainInheritedPermissions": True,
+            "expirationDateTime": "2026-10-01T00:00:00Z",
+        }
+        return httpx.Response(
+            201,
+            json={
+                "id": "perm-1",
+                "roles": ["read"],
+                "link": {
+                    "type": "view",
+                    "scope": "organization",
+                    "webUrl": "https://contoso.sharepoint.com/share/link",
+                },
+            },
+        )
+
+    client, http_client = _make_client(handler)
+    result = await client.create_link(
+        driveId="drive-1",
+        itemId="item-1",
+        linkType="view",
+        scope="organization",
+        expirationDateTime="2026-10-01T00:00:00Z",
+    )
+    assert result.permission.permissionId == "perm-1"
+    assert result.permission.roles == ["read"]
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_grant_access_posts_invite_without_email_by_default() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1.0/drives/drive-1/items/item-1/invite"
+        assert json.loads(request.content) == {
+            "recipients": [{"email": "ada@example.com"}],
+            "roles": ["read"],
+            "requireSignIn": True,
+            "sendInvitation": False,
+            "retainInheritedPermissions": True,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "perm-user",
+                        "roles": ["read"],
+                        "invitation": {"email": "ada@example.com"},
+                    }
+                ]
+            },
+        )
+
+    client, http_client = _make_client(handler)
+    result = await client.grant_access(
+        driveId="drive-1",
+        itemId="item-1",
+        recipients=["  ada@example.com  "],
+        role="read",
+    )
+    assert result.permissions[0].grantedTo[0].email == "ada@example.com"
+    assert result.failures == []
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_grant_access_reports_partial_failures() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            207,
+            json={
+                "value": [
+                    {
+                        "id": "perm-user",
+                        "roles": ["read"],
+                        "invitation": {"email": "ada@example.com"},
+                    },
+                    {
+                        "id": "perm-external",
+                        "roles": ["read"],
+                        "invitation": {"email": "external@example.net"},
+                        "error": {
+                            "code": "notAllowed",
+                            "message": "Access granted, but notification failed.",
+                        }
+                    },
+                ]
+            },
+        )
+
+    client, http_client = _make_client(handler)
+    result = await client.grant_access(
+        driveId="drive-1",
+        itemId="item-1",
+        recipients=["ada@example.com", "external@example.net"],
+        role="read",
+    )
+    assert len(result.permissions) == 2
+    assert result.permissions[1].permissionId == "perm-external"
+    assert result.failures[0].recipient == "external@example.net"
+    assert result.failures[0].code == "notAllowed"
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_revoke_permission_deletes_only_the_permission() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "DELETE"
+        assert (
+            request.url.path
+            == "/v1.0/drives/drive-1/items/item-1/permissions/perm-1"
+        )
+        return httpx.Response(204)
+
+    client, http_client = _make_client(handler)
+    result = await client.revoke_permission(
+        driveId="drive-1", itemId="item-1", permissionId="perm-1"
+    )
+    assert result.revoked is True
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_grant_access_requires_a_recipient() -> None:
+    client, http_client = _make_client(
+        lambda request: pytest.fail(f"unexpected request: {request.url}")
+    )
+    with pytest.raises(ValueError, match="recipient"):
+        await client.grant_access(
+            driveId="drive-1", itemId="item-1", recipients=["  "], role="read"
+        )
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
 async def test_request_error_raises_with_graph_detail() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

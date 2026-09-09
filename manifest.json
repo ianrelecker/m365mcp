@@ -2,9 +2,9 @@
   "manifest_version": "0.4",
   "name": "m365-mcp",
   "display_name": "Microsoft 365",
-  "version": "26.03",
+  "version": "26.04",
   "description": "Local MCP server for one Microsoft 365 user: mail, folders, rules, categories, contacts, calendar, SharePoint browsing, and in-place Excel editing.",
-  "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, send, move, flag, and categorize mail, including shared/delegated mailboxes.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- View image attachments and inline pictures embedded in message bodies.\n- Look at PDF attachments page by page, including scanned documents, by rendering pages to images.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders (read-only).\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
+  "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, send, move, flag, and categorize mail, including shared/delegated mailboxes.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- View image attachments and inline pictures embedded in message bodies.\n- Look at PDF attachments page by page, including scanned documents, by rendering pages to images.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders.\n- Resolve sharing URLs; list access; create links; grant named users access; and revoke permissions.\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
   "author": {
     "name": "ianrelecker",
     "url": "https://github.com/ianrelecker"
@@ -357,6 +357,22 @@
     {
       "name": "sharepoint_get_item_by_url",
       "description": "Resolve a SharePoint or OneDrive sharing/browser URL to a drive item, returning its driveId and itemId for further browsing."
+    },
+    {
+      "name": "sharepoint_list_permissions",
+      "description": "List the sharing links, direct grants, roles, recipients, and inheritance state visible to the signed-in user for a file or folder. List permissions before revoking access."
+    },
+    {
+      "name": "sharepoint_create_link",
+      "description": "Create or return a SharePoint/OneDrive view or edit link. Scope must be organization or anonymous; anonymous links may expose the item to anyone with the URL. Confirm the exact item, type, scope\u2026"
+    },
+    {
+      "name": "sharepoint_grant_access",
+      "description": "Grant named recipients read or write access to a SharePoint or OneDrive file/folder. Invitations are not emailed unless sendInvitation=true. Confirm the item, recipients, role, message, and email\u2026"
+    },
+    {
+      "name": "sharepoint_revoke_permission",
+      "description": "Revoke a non-inherited direct permission or an entire sharing link by permissionId. List permissions first and confirm the exact item and permission with the user before setting confirm=true."
     },
     {
       "name": "workbook_resolve",

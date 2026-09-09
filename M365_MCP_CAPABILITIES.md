@@ -105,6 +105,11 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `sharepoint_list_children` to browse a folder by `driveId` plus an `itemId` or a path relative to the drive root; filter with `extensions` (e.g. `["xlsx", "pdf"]`) or `foldersOnly`.
 - Use `sharepoint_search_in_drive` to search by name inside one library.
 - Use `sharepoint_get_item_by_url` to turn a SharePoint/OneDrive sharing or browser URL into a `driveId` + `itemId`.
+- Use `sharepoint_list_permissions` to inspect sharing links, named recipients, roles, and inherited access before making a change.
+- Use `sharepoint_create_link` to create an organization or anonymous view/edit link. Anonymous links can expose the item to anyone who receives the URL.
+- Use `sharepoint_grant_access` to grant named recipients read/write access. Invitation email is off unless `sendInvitation=true` is explicitly requested.
+- Use `sharepoint_revoke_permission` to remove a non-inherited direct grant or an entire sharing link. It cannot remove inherited access from a child item.
+- Creating links, granting access, and revoking permissions require explicit confirmation of the target and sharing details.
 - The typical flow is: locate a workbook with these tools to get its `driveId` + `itemId`, then hand those to the workbook tools to edit it in place.
 
 ## Excel Workbooks

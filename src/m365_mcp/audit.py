@@ -23,6 +23,7 @@ ID_FIELDS = {
     "messageId",
     "parentFolderId",
     "parentFolderPath",
+    "permissionId",
     "ruleId",
     "worksheet",
 }
@@ -36,6 +37,10 @@ SENSITIVE_FIELDS = {
     "from_",
     "mobilePhone",
     "query",
+    "message",
+    "password",
+    "recipients",
+    "shareUrl",
     "subject",
     "to",
 }
@@ -72,6 +77,8 @@ def classify_tool(tool_name: str) -> str:
             "sort",
             "filter",
             "format",
+            "grant",
+            "revoke",
         )
     ):
         return "write"
@@ -106,6 +113,9 @@ def _sensitive_values(arguments: dict[str, Any]) -> list[str]:
     def collect(value: Any) -> None:
         if isinstance(value, str) and value:
             values.append(value)
+            stripped = value.strip()
+            if stripped and stripped != value:
+                values.append(stripped)
         elif isinstance(value, list):
             for item in value:
                 collect(item)

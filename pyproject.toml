@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-m365-mcp"
-version = "26.03"
+version = "26.04"
 description = "Local MCP server for one Microsoft 365 user with delegated Microsoft Graph access."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -57,6 +57,10 @@ from m365_mcp.sharepoint_files import (
     DriveItemsResult,
     DrivesResult,
     SharePointFilesClient,
+    SharingGrantResult,
+    SharingPermissionResult,
+    SharingPermissionsResult,
+    SharingRevokeResult,
     SiteInfo,
     SitesResult,
 )
@@ -1688,6 +1692,114 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     ) -> DriveItemInfo:
         runtime = runtime_provider.get()
         return await runtime.sharepoint.get_item_by_share_url(shareUrl=shareUrl)
+
+    @mcp.tool(
+        name="sharepoint_list_permissions",
+        description=(
+            "List the sharing links, direct grants, roles, recipients, and "
+            "inheritance state visible to the signed-in user for a file or "
+            "folder. List permissions before revoking access."
+        ),
+    )
+    async def sharepoint_list_permissions(
+        driveId: str,
+        itemId: str,
+    ) -> SharingPermissionsResult:
+        runtime = runtime_provider.get()
+        return await runtime.sharepoint.list_permissions(
+            driveId=driveId,
+            itemId=itemId,
+        )
+
+    @mcp.tool(
+        name="sharepoint_create_link",
+        description=(
+            "Create or return a SharePoint/OneDrive view or edit link. Scope "
+            "must be organization or anonymous; anonymous links may expose the "
+            "item to anyone with the URL. Confirm the exact item, type, scope, "
+            "and expiration with the user before setting confirm=true."
+        ),
+    )
+    async def sharepoint_create_link(
+        driveId: str,
+        itemId: str,
+        linkType: Literal["view", "edit"],
+        scope: Literal["organization", "anonymous"],
+        expirationDateTime: str | None = None,
+        confirm: Annotated[
+            bool,
+            Field(description="Must be true after explicit user confirmation."),
+        ] = False,
+    ) -> SharingPermissionResult:
+        if not confirm:
+            raise ValueError("Explicit confirmation is required to create a link.")
+        runtime = runtime_provider.get()
+        return await runtime.sharepoint.create_link(
+            driveId=driveId,
+            itemId=itemId,
+            linkType=linkType,
+            scope=scope,
+            expirationDateTime=expirationDateTime,
+        )
+
+    @mcp.tool(
+        name="sharepoint_grant_access",
+        description=(
+            "Grant named recipients read or write access to a SharePoint or "
+            "OneDrive file/folder. Invitations are not emailed unless "
+            "sendInvitation=true. Confirm the item, recipients, role, message, "
+            "and email behavior with the user before setting confirm=true."
+        ),
+    )
+    async def sharepoint_grant_access(
+        driveId: str,
+        itemId: str,
+        recipients: list[str],
+        role: Literal["read", "write"] = "read",
+        sendInvitation: bool = False,
+        message: str | None = None,
+        confirm: Annotated[
+            bool,
+            Field(description="Must be true after explicit user confirmation."),
+        ] = False,
+    ) -> SharingGrantResult:
+        if not confirm:
+            raise ValueError("Explicit confirmation is required to grant access.")
+        runtime = runtime_provider.get()
+        return await runtime.sharepoint.grant_access(
+            driveId=driveId,
+            itemId=itemId,
+            recipients=recipients,
+            role=role,
+            sendInvitation=sendInvitation,
+            message=message,
+        )
+
+    @mcp.tool(
+        name="sharepoint_revoke_permission",
+        description=(
+            "Revoke a non-inherited direct permission or an entire sharing link "
+            "by permissionId. List permissions first and confirm the exact item "
+            "and permission with the user before setting confirm=true."
+        ),
+    )
+    async def sharepoint_revoke_permission(
+        driveId: str,
+        itemId: str,
+        permissionId: str,
+        confirm: Annotated[
+            bool,
+            Field(description="Must be true after explicit user confirmation."),
+        ] = False,
+    ) -> SharingRevokeResult:
+        if not confirm:
+            raise ValueError("Explicit confirmation is required to revoke access.")
+        runtime = runtime_provider.get()
+        return await runtime.sharepoint.revoke_permission(
+            driveId=driveId,
+            itemId=itemId,
+            permissionId=permissionId,
+        )
 
     @mcp.tool(
         name="workbook_resolve",

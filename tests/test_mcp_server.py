@@ -182,6 +182,10 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "sharepoint_list_children",
             "sharepoint_search_in_drive",
             "sharepoint_get_item_by_url",
+            "sharepoint_list_permissions",
+            "sharepoint_create_link",
+            "sharepoint_grant_access",
+            "sharepoint_revoke_permission",
             "workbook_resolve",
             "workbook_list_worksheets",
             "workbook_list_tables",
@@ -224,6 +228,19 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
         assert "personalHomePage" in contact_update_schema["properties"]
         assert "personalNotes" in contact_update_schema["properties"]
         assert "countryOrRegion" in str(contact_create_schema)
+        create_link_schema = tool_by_name["sharepoint_create_link"].inputSchema
+        assert create_link_schema["properties"]["linkType"]["enum"] == [
+            "view",
+            "edit",
+        ]
+        assert create_link_schema["properties"]["scope"]["enum"] == [
+            "organization",
+            "anonymous",
+        ]
+        assert create_link_schema["properties"]["confirm"]["default"] is False
+        grant_schema = tool_by_name["sharepoint_grant_access"].inputSchema
+        assert grant_schema["properties"]["role"]["enum"] == ["read", "write"]
+        assert grant_schema["properties"]["sendInvitation"]["default"] is False
 
         resources = await session.list_resources()
         assert {str(resource.uri) for resource in resources.resources} == {
@@ -274,6 +291,59 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
         )
         assert event.structuredContent["event"]["subject"] == "Planning"
 
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_sharepoint_mutations_require_confirmation(config_factory) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected Graph request: {request.method} {request.url}")
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    runtime = RuntimeServices(
+        config=config_factory(localBaseUrl="http://localhost:8787"),
+        microsoft_auth=StubAuthService(),
+        graph=StubGraphClient(),
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(
+        server, raise_exceptions=False
+    ) as session:
+        create = await session.call_tool(
+            "sharepoint_create_link",
+            {
+                "driveId": "drive-1",
+                "itemId": "item-1",
+                "linkType": "view",
+                "scope": "organization",
+            },
+        )
+        grant = await session.call_tool(
+            "sharepoint_grant_access",
+            {
+                "driveId": "drive-1",
+                "itemId": "item-1",
+                "recipients": ["ada@example.com"],
+            },
+        )
+        revoke = await session.call_tool(
+            "sharepoint_revoke_permission",
+            {
+                "driveId": "drive-1",
+                "itemId": "item-1",
+                "permissionId": "perm-1",
+            },
+        )
+
+    assert create.isError is True
+    assert grant.isError is True
+    assert revoke.isError is True
     await http_client.aclose()
 
 
