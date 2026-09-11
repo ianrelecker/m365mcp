@@ -60,6 +60,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from .microsoft_auth import MicrosoftAuthService
+from .pid_policy import Location, PidPolicy, labels_from_graph
 
 GRAPH_V1 = "https://graph.microsoft.com/v1.0"
 
@@ -267,9 +268,11 @@ class ExcelWorkbookClient:
         self,
         auth_service: MicrosoftAuthService,
         http_client: httpx.AsyncClient | None = None,
+        pid_policy: PidPolicy | None = None,
     ) -> None:
         self._auth_service = auth_service
         self._http_client = http_client
+        self._pid_policy = pid_policy or PidPolicy.disabled()
 
     # ---- public API ------------------------------------------------------- #
     async def resolve_workbook(
@@ -295,35 +298,55 @@ class ExcelWorkbookClient:
                 "?$select=id,name,webUrl,parentReference"
             )
             parent = data.get("parentReference") or {}
-            return WorkbookItemRef(
+            item = WorkbookItemRef(
                 driveId=str(parent.get("driveId")),
                 itemId=str(data["id"]),
                 name=data.get("name"),
                 webUrl=data.get("webUrl"),
             )
+            self._require_item(
+                item,
+                path=parent.get("path"),
+                labels=labels_from_graph(data),
+            )
+            return item
         if driveId and itemId:
             data = await self._request(
                 f"/drives/{quote(driveId, safe='')}/items/{quote(itemId, safe='')}"
-                "?$select=id,name,webUrl"
+                "?$select=id,name,webUrl,parentReference"
             )
-            return WorkbookItemRef(
+            parent = data.get("parentReference") or {}
+            item = WorkbookItemRef(
                 driveId=driveId,
                 itemId=str(data["id"]),
                 name=data.get("name"),
                 webUrl=data.get("webUrl"),
             )
+            self._require_item(
+                item,
+                path=parent.get("path") or itemPath,
+                labels=labels_from_graph(data),
+            )
+            return item
         if driveId and itemPath:
             path = itemPath.strip("/")
             data = await self._request(
                 f"/drives/{quote(driveId, safe='')}/root:/{quote(path)}:"
-                "?$select=id,name,webUrl"
+                "?$select=id,name,webUrl,parentReference"
             )
-            return WorkbookItemRef(
+            parent = data.get("parentReference") or {}
+            item = WorkbookItemRef(
                 driveId=driveId,
                 itemId=str(data["id"]),
                 name=data.get("name"),
                 webUrl=data.get("webUrl"),
             )
+            self._require_item(
+                item,
+                path=parent.get("path") or path,
+                labels=labels_from_graph(data),
+            )
+            return item
         raise ValueError(
             "Provide shareUrl, or driveId+itemId, or driveId+itemPath"
         )
@@ -425,8 +448,8 @@ class ExcelWorkbookClient:
             item=item,
             worksheet=worksheet,
             address=data.get("address", address),
-            values=data.get("values", []),
-            text=data.get("text"),
+            values=self._pid_policy.redact_grid(data.get("values", [])) or [],
+            text=self._pid_policy.redact_grid(data.get("text")),
             formulas=data.get("formulas"),
             numberFormat=data.get("numberFormat"),
             rowCount=data.get("rowCount"),
@@ -452,8 +475,8 @@ class ExcelWorkbookClient:
             item=item,
             worksheet=worksheet,
             address=data.get("address", ""),
-            values=data.get("values", []),
-            text=data.get("text"),
+            values=self._pid_policy.redact_grid(data.get("values", [])) or [],
+            text=self._pid_policy.redact_grid(data.get("text")),
             formulas=data.get("formulas"),
             numberFormat=data.get("numberFormat"),
             rowCount=data.get("rowCount"),
@@ -554,7 +577,15 @@ class ExcelWorkbookClient:
         out: list[WorkbookRangeData] = []
         for i, (ws, addr) in enumerate(specs):
             resp = responses.get(str(i))
-            out.append(self._read_range_response(ws, addr, resp))
+            result = self._read_range_response(ws, addr, resp)
+            out.append(
+                result.model_copy(
+                    update={
+                        "values": self._pid_policy.redact_grid(result.values),
+                        "text": self._pid_policy.redact_grid(result.text),
+                    }
+                )
+            )
         return WorkbookRangesResult(item=item, ranges=out)
 
     async def update_ranges(
@@ -704,8 +735,8 @@ class ExcelWorkbookClient:
             item=item,
             name=name,
             address=data.get("address", ""),
-            values=data.get("values", []),
-            text=data.get("text"),
+            values=self._pid_policy.redact_grid(data.get("values", [])) or [],
+            text=self._pid_policy.redact_grid(data.get("text")),
             formulas=data.get("formulas"),
             numberFormat=data.get("numberFormat"),
         )
@@ -1103,8 +1134,25 @@ class ExcelWorkbookClient:
         worksheets('Name') or range(address='A1')."""
         return value.replace("'", "''")
 
-    @staticmethod
-    def _wb_base(item: WorkbookItemRef) -> str:
+    def _require_item(
+        self,
+        item: WorkbookItemRef,
+        *,
+        path: str | None = None,
+        labels: tuple[str, ...] = (),
+    ) -> None:
+        self._pid_policy.require_location(
+            Location(
+                drive_id=item.driveId,
+                item_id=item.itemId,
+                path=path,
+                web_url=item.webUrl,
+                labels=labels,
+            )
+        )
+
+    def _wb_base(self, item: WorkbookItemRef) -> str:
+        self._require_item(item)
         return (
             f"/drives/{quote(item.driveId, safe='')}"
             f"/items/{quote(item.itemId, safe='')}/workbook"

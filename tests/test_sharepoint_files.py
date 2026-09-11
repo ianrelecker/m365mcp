@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 
+from m365_mcp.pid_policy import BlockedError, PidPolicy
 from m365_mcp.sharepoint_files import SharePointFilesClient
 
 
@@ -500,3 +501,20 @@ def test_encode_share_url_matches_graph_addressing() -> None:
 
 def test_q_escapes_single_quote() -> None:
     assert SharePointFilesClient._q("it's a 'test'") == "it''s a ''test''"
+
+
+@pytest.mark.anyio
+async def test_pid_safe_mode_blocks_non_allowlisted_drive() -> None:
+    client, http_client = _make_client(lambda request: httpx.Response(500))
+    client._pid_policy = PidPolicy(
+        enabled=True,
+        drive_allowlist=["drive-ok"],
+        location_blocklist=["investor-pid"],
+    )
+    with pytest.raises(BlockedError) as blocked:
+        await client.list_children(driveId="drive-blocked")
+    assert blocked.value.reason == "location_not_allowlisted"
+    with pytest.raises(BlockedError) as blocked:
+        await client.list_children(driveId="drive-ok", path="Funds/investor-pid")
+    assert blocked.value.reason == "location_blocklisted"
+    await http_client.aclose()

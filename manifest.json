@@ -4,7 +4,7 @@
   "display_name": "Microsoft 365",
   "version": "26.04",
   "description": "Local MCP server for one Microsoft 365 user: mail, folders, rules, categories, contacts, calendar, SharePoint browsing, and in-place Excel editing.",
-  "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, send, move, flag, and categorize mail, including shared/delegated mailboxes.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- View image attachments and inline pictures embedded in message bodies.\n- Look at PDF attachments page by page, including scanned documents, by rendering pages to images.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders.\n- Resolve sharing URLs; list access; create links; grant named users access; and revoke permissions.\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
+  "long_description": "Gives an MCP client delegated Microsoft Graph access to a single user's Microsoft 365 account.\n\n- Read, search, draft, move, flag, and categorize mail, including shared/delegated mailboxes. Sending is off unless enabled.\n- Create, rename, and delete mail folders; manage Outlook Inbox rules and master categories.\n- Read message threads and small text/PDF attachments.\n- View image attachments and inline pictures embedded in message bodies.\n- Look at PDF attachments page by page, including scanned documents, by rendering pages to images.\n- Search, create, update, and delete contacts and calendar events.\n- Browse SharePoint sites, document libraries, and folders.\n- Resolve sharing URLs; list access; create links; grant named users access; and revoke permissions.\n- Edit Excel workbooks stored in SharePoint/OneDrive in place through the Graph Workbook API.\n\nThe server runs entirely on your machine. Sign-in uses the Microsoft authorization-code flow with PKCE against your own Entra app registration; tokens are cached locally and encrypted at rest with AES-256-GCM. There is deliberately no tool that deletes a SharePoint or OneDrive file or folder.",
   "author": {
     "name": "ianrelecker",
     "url": "https://github.com/ianrelecker"
@@ -47,7 +47,16 @@
         "TOKEN_ENCRYPTION_KEY": "${user_config.token_encryption_key}",
         "KNOWN_MAILBOXES": "${user_config.known_mailboxes}",
         "PORT": "${user_config.helper_port}",
-        "M365_AUDIT_LOG_ENABLED": "${user_config.audit_log_enabled}"
+        "M365_AUDIT_LOG_ENABLED": "${user_config.audit_log_enabled}",
+        "M365_MAIL_SEND_ENABLED": "${user_config.mail_send_enabled}",
+        "M365_PID_SAFE_MODE": "${user_config.pid_safe_mode}",
+        "M365_PID_MAILBOX_ALLOWLIST": "${user_config.pid_mailbox_allowlist}",
+        "M365_PID_MAILBOX_BLOCKLIST": "${user_config.pid_mailbox_blocklist}",
+        "M365_PID_SITE_ALLOWLIST": "${user_config.pid_site_allowlist}",
+        "M365_PID_DRIVE_ALLOWLIST": "${user_config.pid_drive_allowlist}",
+        "M365_PID_FOLDER_ALLOWLIST": "${user_config.pid_folder_allowlist}",
+        "M365_PID_LOCATION_BLOCKLIST": "${user_config.pid_location_blocklist}",
+        "M365_PID_BLOCKED_SENSITIVITY_LABELS": "${user_config.pid_blocked_sensitivity_labels}"
       }
     }
   },
@@ -100,6 +109,69 @@
       "description": "Write a local JSONL record of every tool call (metadata only: timestamp, tool, outcome, mailbox, key IDs). Never records tokens, secrets, message bodies, or attachment content.",
       "required": false,
       "default": true
+    },
+    "mail_send_enabled": {
+      "type": "boolean",
+      "title": "Enable Mail Sending",
+      "description": "Expose mail_send tools and request Mail.Send / Mail.Send.Shared. Off by default so Claude can draft mail but cannot transmit it.",
+      "required": false,
+      "default": false
+    },
+    "pid_safe_mode": {
+      "type": "boolean",
+      "title": "PID-safe Mode",
+      "description": "Fail closed on SharePoint/Excel unless allowlisted. Block listed investor locations and sensitivity labels, and redact SSN/tax ID patterns. Audit blocked requests without storing the content.",
+      "required": false,
+      "default": false
+    },
+    "pid_mailbox_allowlist": {
+      "type": "string",
+      "title": "PID Mailbox Allowlist",
+      "description": "Optional comma-separated shared mailbox addresses allowed in PID-safe mode. The signed-in mailbox is always allowed.",
+      "required": false,
+      "default": ""
+    },
+    "pid_mailbox_blocklist": {
+      "type": "string",
+      "title": "PID Mailbox Blocklist",
+      "description": "Optional comma-separated mailbox addresses that PID-safe mode always blocks.",
+      "required": false,
+      "default": ""
+    },
+    "pid_site_allowlist": {
+      "type": "string",
+      "title": "PID Site Allowlist",
+      "description": "Optional comma-separated SharePoint site IDs or URL fragments allowed in PID-safe mode.",
+      "required": false,
+      "default": ""
+    },
+    "pid_drive_allowlist": {
+      "type": "string",
+      "title": "PID Library Allowlist",
+      "description": "Optional comma-separated document library (drive) IDs or URL fragments allowed in PID-safe mode.",
+      "required": false,
+      "default": ""
+    },
+    "pid_folder_allowlist": {
+      "type": "string",
+      "title": "PID Folder Allowlist",
+      "description": "Optional comma-separated folder path or URL fragments allowed in PID-safe mode.",
+      "required": false,
+      "default": ""
+    },
+    "pid_location_blocklist": {
+      "type": "string",
+      "title": "PID Location Blocklist",
+      "description": "Optional comma-separated path, URL, or ID fragments that PID-safe mode always blocks, such as investor PID libraries.",
+      "required": false,
+      "default": ""
+    },
+    "pid_blocked_sensitivity_labels": {
+      "type": "string",
+      "title": "Blocked Sensitivity Labels",
+      "description": "Optional comma-separated Microsoft sensitivity label IDs or display names to block when Graph returns them.",
+      "required": false,
+      "default": ""
     }
   },
   "compatibility": {
@@ -187,14 +259,6 @@
       "description": "Create a new draft email. Use mailbox for shared/delegated mailboxes and optionally set from when you need a specific sender."
     },
     {
-      "name": "mail_send",
-      "description": "Send a new email in one call. Prefer mail_create_draft first when the user has not explicitly approved sending."
-    },
-    {
-      "name": "mail_send_draft",
-      "description": "Send an existing draft message by ID. Use mailbox for shared/delegated mailboxes."
-    },
-    {
       "name": "mail_move",
       "description": "Move a message to another folder. Pass a well-known folder name like Archive or DeletedItems, or set destinationFolderIsId when passing a raw folder ID."
     },
@@ -224,11 +288,7 @@
     },
     {
       "name": "mail_create_reply_draft",
-      "description": "Create a reply or reply-all draft in the original message thread. Use mail_send_draft later to send it."
-    },
-    {
-      "name": "mail_send_reply",
-      "description": "Send a reply or reply-all immediately in the original thread. Prefer mail_create_reply_draft first when approval is not explicit."
+      "description": "Create a reply or reply-all draft in the original message thread. Sending is disabled; the user sends the draft from Outlook."
     },
     {
       "name": "mail_list_categories",

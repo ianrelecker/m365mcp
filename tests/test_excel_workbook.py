@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from m365_mcp.excel_workbook import ExcelWorkbookClient, WorkbookItemRef
+from m365_mcp.pid_policy import BlockedError, PidPolicy
 
 
 class StaticAuthService:
@@ -507,6 +508,18 @@ def test_encode_share_url_strips_padding() -> None:
 
 def test_wb_base_quotes_ids() -> None:
     ref = WorkbookItemRef(driveId="d/1", itemId="i 1")
-    base = ExcelWorkbookClient._wb_base(ref)
-    # driveId and itemId are quoted with safe='' so '/' and ' ' are escaped.
+    client = ExcelWorkbookClient(StaticAuthService())
+    base = client._wb_base(ref)
     assert base == "/drives/d%2F1/items/i%201/workbook"
+
+
+@pytest.mark.anyio
+async def test_pid_safe_mode_blocks_workbook_outside_allowlist() -> None:
+    client, http_client = _make_client(lambda request: httpx.Response(500))
+    client._pid_policy = PidPolicy(enabled=True, drive_allowlist=["drive-ok"])
+    with pytest.raises(BlockedError) as blocked:
+        await client.list_worksheets(
+            WorkbookItemRef(driveId="drive-blocked", itemId="item-1")
+        )
+    assert blocked.value.reason == "location_not_allowlisted"
+    await http_client.aclose()

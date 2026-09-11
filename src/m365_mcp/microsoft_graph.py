@@ -78,6 +78,7 @@ from .models import (
     SkippedAttachment,
 )
 from .microsoft_auth import MicrosoftAuthService
+from .pid_policy import PidPolicy
 
 
 def _utc_now_iso() -> str:
@@ -215,9 +216,11 @@ class MicrosoftGraphClient:
         self,
         auth_service: MicrosoftAuthService,
         http_client: httpx.AsyncClient | None = None,
+        pid_policy: PidPolicy | None = None,
     ) -> None:
         self._auth_service = auth_service
         self._http_client = http_client
+        self._pid_policy = pid_policy or PidPolicy.disabled()
 
     @asynccontextmanager
     async def _client(self) -> Any:
@@ -908,7 +911,7 @@ class MicrosoftGraphClient:
                 mailbox=normalized_mailbox or "me",
                 messageId=messageId,
                 attachment=attachment,
-                content=content[:maxChars],
+                content=self._pid_policy.redact_text(content[:maxChars]),
                 encoding="pdf-text",
                 truncated=truncated,
                 unsupportedReason=(
@@ -922,7 +925,9 @@ class MicrosoftGraphClient:
             mailbox=normalized_mailbox or "me",
             messageId=messageId,
             attachment=attachment,
-            content=content_bytes.decode("utf-8", errors="replace"),
+            content=self._pid_policy.redact_text(
+                content_bytes.decode("utf-8", errors="replace")
+            ),
             encoding="utf-8",
         )
 
@@ -2036,7 +2041,9 @@ class MicrosoftGraphClient:
 
     def _normalize_mailbox(self, mailbox: str | None) -> str | None:
         value = (mailbox or "").strip()
-        return value or None
+        normalized = value or None
+        self._pid_policy.require_mailbox(normalized)
+        return normalized
 
     async def _request(
         self,
@@ -2696,13 +2703,15 @@ class MicrosoftGraphClient:
     def _map_message_summary(self, message: dict[str, Any]) -> MessageSummary:
         return MessageSummary(
             id=str(message["id"]),
-            subject=str(message.get("subject") or ""),
+            subject=self._pid_policy.redact_text(str(message.get("subject") or "")),
             from_=self._map_email_address(message.get("from")),
             sender=self._map_email_address(message.get("sender")),
             replyTo=self._map_recipients(message.get("replyTo")),
             receivedDateTime=self._nullable_string(message.get("receivedDateTime")),
             sentDateTime=self._nullable_string(message.get("sentDateTime")),
-            bodyPreview=str(message.get("bodyPreview") or ""),
+            bodyPreview=self._pid_policy.redact_text(
+                str(message.get("bodyPreview") or "")
+            ),
             webLink=self._nullable_string(message.get("webLink")),
             isDraft=bool(message.get("isDraft", False)),
             isRead=(
@@ -2732,7 +2741,7 @@ class MicrosoftGraphClient:
         body = message.get("body") or {}
         return FullMessage(
             id=str(message["id"]),
-            subject=str(message.get("subject") or ""),
+            subject=self._pid_policy.redact_text(str(message.get("subject") or "")),
             from_=self._map_email_address(message.get("from")),
             sender=self._map_email_address(message.get("sender")),
             replyTo=self._map_recipients(message.get("replyTo")),
@@ -2741,10 +2750,12 @@ class MicrosoftGraphClient:
             bcc=self._map_recipients(message.get("bccRecipients")),
             receivedDateTime=self._nullable_string(message.get("receivedDateTime")),
             sentDateTime=self._nullable_string(message.get("sentDateTime")),
-            bodyPreview=str(message.get("bodyPreview") or ""),
+            bodyPreview=self._pid_policy.redact_text(
+                str(message.get("bodyPreview") or "")
+            ),
             body=MessageBody(
                 contentType=str(body.get("contentType") or "text"),
-                content=str(body.get("content") or ""),
+                content=self._pid_policy.redact_text(str(body.get("content") or "")),
             ),
             webLink=self._nullable_string(message.get("webLink")),
             isDraft=bool(message.get("isDraft", False)),
@@ -2796,10 +2807,12 @@ class MicrosoftGraphClient:
                 )
                 for attendee in attendees
             ],
-            bodyPreview=str(event.get("bodyPreview") or ""),
+            bodyPreview=self._pid_policy.redact_text(
+                str(event.get("bodyPreview") or "")
+            ),
             body=MessageBody(
                 contentType=str(body.get("contentType") or "text"),
-                content=str(body.get("content") or ""),
+                content=self._pid_policy.redact_text(str(body.get("content") or "")),
             ),
         )
 
