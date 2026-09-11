@@ -106,7 +106,7 @@ Important fields:
 - `M365_AUDIT_LOG_ENABLED`: optional. Defaults to `true`.
 - `M365_AUDIT_LOG_FILE`: optional. Defaults to `.audit/m365-mcp-audit.jsonl`.
 - `M365_MAIL_SEND_ENABLED`: optional. Defaults to `false`. When false, the server does not request `Mail.Send` / `Mail.Send.Shared` and does not register send tools. Draft tools stay available.
-- `M365_PID_SAFE_MODE`: optional. Defaults to `false`. When true, mailbox and SharePoint/Excel access is fail-closed unless allowlisted, blocklisted investor locations and sensitivity labels are denied, and SSN/tax-ID patterns are redacted before content is returned.
+- `M365_PID_SAFE_MODE`: optional. Defaults to `false`. When true, mailbox and SharePoint/Excel access is fail-closed unless allowlisted (an empty mailbox allowlist blocks all mail, including the signed-in user), blocklisted investor locations and sensitivity labels are denied, image/PDF-page tools are blocked, and SSN/tax-ID patterns are redacted from returned text.
 
 Generate `TOKEN_ENCRYPTION_KEY` with:
 

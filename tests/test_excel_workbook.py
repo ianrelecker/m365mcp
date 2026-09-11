@@ -506,10 +506,11 @@ def test_encode_share_url_strips_padding() -> None:
     assert base64.urlsafe_b64decode(padded).decode("utf-8") == "https://a/b?c=1"
 
 
-def test_wb_base_quotes_ids() -> None:
+@pytest.mark.anyio
+async def test_wb_base_quotes_ids() -> None:
     ref = WorkbookItemRef(driveId="d/1", itemId="i 1")
     client = ExcelWorkbookClient(StaticAuthService())
-    base = client._wb_base(ref)
+    base = await client._wb_base(ref)
     assert base == "/drives/d%2F1/items/i%201/workbook"
 
 

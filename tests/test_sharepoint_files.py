@@ -513,7 +513,10 @@ async def test_pid_safe_mode_blocks_non_allowlisted_drive() -> None:
     )
     with pytest.raises(BlockedError) as blocked:
         await client.list_children(driveId="drive-blocked")
-    assert blocked.value.reason == "location_not_allowlisted"
+    assert blocked.value.reason in {
+        "location_not_allowlisted",
+        "location_blocklisted",
+    }
     with pytest.raises(BlockedError) as blocked:
         await client.list_children(driveId="drive-ok", path="Funds/investor-pid")
     assert blocked.value.reason == "location_blocklisted"

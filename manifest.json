@@ -127,7 +127,7 @@
     "pid_mailbox_allowlist": {
       "type": "string",
       "title": "PID Mailbox Allowlist",
-      "description": "Optional comma-separated shared mailbox addresses allowed in PID-safe mode. The signed-in mailbox is always allowed.",
+      "description": "Optional comma-separated mailbox addresses allowed in PID-safe mode. Empty blocks all mail, including the signed-in mailbox. Include every mailbox that should be reachable.",
       "required": false,
       "default": ""
     },

@@ -242,7 +242,9 @@ class SharePointFilesClient:
         Optionally filter to file extensions (e.g. ['xlsx','pdf']) or folders.
         """
         self._pid_policy.require_location(
-            Location(drive_id=driveId, item_id=itemId, path=path)
+            await self._resolved_item_location(
+                drive_id=driveId, item_id=itemId, path=path
+            )
         )
         if itemId:
             base = f"/drives/{quote(driveId, safe='')}/items/{quote(itemId, safe='')}/children"
@@ -281,7 +283,9 @@ class SharePointFilesClient:
         extensions: list[str] | None = None,
     ) -> DriveItemsResult:
         """Search for files/folders by name within a single document library."""
-        self._pid_policy.require_location(Location(drive_id=driveId))
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId)
+        )
         data = await self._request(
             f"/drives/{quote(driveId, safe='')}/root/search(q='{self._q(query)}')"
             f"?$top={min(top, 200)}"
@@ -339,9 +343,15 @@ class SharePointFilesClient:
         )
         parent = data.get("parentReference") or {}
         item = self._map_item(data, parent.get("driveId"))
-        self._pid_policy.require_location(
-            self._item_location(item, labels=labels_from_graph(data))
-        )
+        labels = labels_from_graph(data)
+        if (
+            self._pid_policy.enabled
+            and self._pid_policy.blocked_sensitivity_labels
+            and not labels
+            and item.driveId
+        ):
+            labels = await self._extract_labels(item.driveId, item.itemId)
+        self._pid_policy.require_location(self._item_location(item, labels=labels))
         return item
 
     # ---- sharing ---------------------------------------------------------- #
@@ -349,7 +359,9 @@ class SharePointFilesClient:
         self, *, driveId: str, itemId: str
     ) -> SharingPermissionsResult:
         """List the effective permissions visible to the signed-in user."""
-        self._pid_policy.require_location(Location(drive_id=driveId, item_id=itemId))
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         data = await self._request(f"{self._item_path(driveId, itemId)}/permissions")
         raw_permissions = list(data.get("value", []))
         next_link = data.get("@odata.nextLink")
@@ -381,7 +393,9 @@ class SharePointFilesClient:
         expirationDateTime: str | None = None,
     ) -> SharingPermissionResult:
         """Create or return an existing sharing link for an item."""
-        self._pid_policy.require_location(Location(drive_id=driveId, item_id=itemId))
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         body: dict[str, Any] = {
             "type": linkType,
             "scope": scope,
@@ -411,7 +425,9 @@ class SharePointFilesClient:
         message: str | None = None,
     ) -> SharingGrantResult:
         """Grant named recipients read or write access to an item."""
-        self._pid_policy.require_location(Location(drive_id=driveId, item_id=itemId))
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         addresses = [address.strip() for address in recipients if address.strip()]
         if not addresses:
             raise ValueError("At least one recipient email address is required.")
@@ -467,7 +483,9 @@ class SharePointFilesClient:
         self, *, driveId: str, itemId: str, permissionId: str
     ) -> SharingRevokeResult:
         """Revoke a non-inherited direct permission or entire sharing link."""
-        self._pid_policy.require_location(Location(drive_id=driveId, item_id=itemId))
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         await self._request(
             f"{self._item_path(driveId, itemId)}/permissions/"
             f"{quote(permissionId, safe='')}",
@@ -495,6 +513,54 @@ class SharePointFilesClient:
             path=item.path,
             web_url=item.webUrl,
             labels=labels,
+        )
+
+    async def _extract_labels(self, drive_id: str, item_id: str) -> tuple[str, ...]:
+        try:
+            data = await self._request(
+                f"{self._item_path(drive_id, item_id)}/extractSensitivityLabels",
+                method="POST",
+            )
+        except RuntimeError:
+            return ()
+        return labels_from_graph(data if isinstance(data, dict) else None)
+
+    async def _resolved_item_location(
+        self,
+        *,
+        drive_id: str | None = None,
+        item_id: str | None = None,
+        path: str | None = None,
+        web_url: str | None = None,
+        labels: tuple[str, ...] = (),
+        site_id: str | None = None,
+    ) -> Location:
+        resolved_path = path
+        resolved_url = web_url
+        resolved_labels = labels
+        if (
+            self._pid_policy.enabled
+            and self._pid_policy.needs_item_metadata()
+            and drive_id
+            and item_id
+            and (not resolved_path or not resolved_labels)
+        ):
+            data = await self._request(
+                f"/drives/{quote(drive_id, safe='')}/items/{quote(item_id, safe='')}"
+                "?$select=id,webUrl,parentReference"
+            )
+            parent = data.get("parentReference") or {}
+            resolved_path = resolved_path or parent.get("path")
+            resolved_url = resolved_url or data.get("webUrl")
+            if self._pid_policy.blocked_sensitivity_labels and not resolved_labels:
+                resolved_labels = await self._extract_labels(drive_id, item_id)
+        return Location(
+            site_id=site_id,
+            drive_id=drive_id,
+            item_id=item_id,
+            path=resolved_path,
+            web_url=resolved_url,
+            labels=resolved_labels,
         )
 
     def _keep_mapped(

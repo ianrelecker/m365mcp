@@ -37,9 +37,10 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 ## PID-safe mode
 
-- If `auth_status.pidSafeMode` is true, do not expect access to investor PID locations. Allowlisted mailboxes, sites, libraries, and folders are the primary control.
+- If `auth_status.pidSafeMode` is true, do not expect access to investor PID locations. Allowlisted mailboxes, sites, libraries, and folders are the primary control. An empty mailbox allowlist blocks all mail, including the signed-in mailbox — list every mailbox that should be reachable.
 - Blocked requests return an error and are audited as `blocked` without the protected content.
 - Identifiers such as SSNs and tax IDs in returned text are redacted. Pattern matching is an extra safeguard, not a guarantee.
+- Image attachments, inline pictures, and PDF page renders are blocked in PID-safe mode because they cannot be redacted. Use `mail_get_attachment_content` for text-layer PDF extraction only.
 - There is no local PID extractor yet. Do not try to read subscription agreements or other blocked investor documents into this conversation.
 
 ## Rules

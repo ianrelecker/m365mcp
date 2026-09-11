@@ -2469,12 +2469,15 @@ def create_default_server() -> FastMCP:
     )
 
 
-mcp = create_default_server()
+mcp = _create_server(
+    _RuntimeProvider(create_runtime),
+    mail_send_enabled=False,
+)
 app = mcp
 
 
 def main() -> None:
-    mcp.run()
+    create_default_server().run()
 
 
 if __name__ == "__main__":

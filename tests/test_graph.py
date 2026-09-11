@@ -1590,6 +1590,13 @@ async def test_pid_safe_mode_blocks_non_allowlisted_mailbox() -> None:
     with pytest.raises(BlockedError) as blocked:
         await graph.list_messages(mailbox="investor@example.com", folder="Inbox")
     assert blocked.value.reason == "mailbox_not_allowlisted"
+    with pytest.raises(BlockedError) as blocked:
+        await graph.get_attachment_pdf_pages(
+            mailbox="partners@example.com",
+            messageId="m1",
+            attachmentId="a1",
+        )
+    assert blocked.value.reason == "unredactable_content"
     await client.aclose()
 
 

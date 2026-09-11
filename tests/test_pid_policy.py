@@ -19,13 +19,16 @@ def test_disabled_policy_allows_everything() -> None:
     assert policy.redact_text("SSN 123-45-6789") == "SSN 123-45-6789"
 
 
-def test_mailbox_allowlist_and_blocklist() -> None:
+def test_mailbox_allowlist_is_fail_closed() -> None:
     policy = PidPolicy(
         enabled=True,
-        mailbox_allowlist=["partners@example.com"],
+        mailbox_allowlist=["partners@example.com", "ebremner@example.com"],
         mailbox_blocklist=["blocked@example.com"],
     )
-    policy.require_mailbox(None)
+    with pytest.raises(BlockedError) as blocked:
+        policy.require_mailbox(None)
+    assert blocked.value.reason == "mailbox_not_allowlisted"
+    policy.require_mailbox("ebremner@example.com")
     policy.require_mailbox("partners@example.com")
     with pytest.raises(BlockedError) as blocked:
         policy.require_mailbox("other@example.com")
@@ -34,6 +37,13 @@ def test_mailbox_allowlist_and_blocklist() -> None:
         policy.require_mailbox("blocked@example.com")
     assert blocked.value.reason == "mailbox_blocklisted"
     assert "partners@" not in str(blocked.value)
+
+
+def test_empty_mailbox_allowlist_blocks_all_mail() -> None:
+    policy = PidPolicy(enabled=True)
+    with pytest.raises(BlockedError) as blocked:
+        policy.require_mailbox("anyone@example.com")
+    assert blocked.value.reason == "mailbox_not_allowlisted"
 
 
 def test_sharepoint_fail_closed_without_allowlist() -> None:
@@ -58,7 +68,20 @@ def test_drive_allowlist_and_folder_blocklist() -> None:
     assert "Jane" not in str(blocked.value)
 
 
-def test_folder_allowlist_matches_path_or_url() -> None:
+def test_id_only_location_is_blocked_when_folder_rules_exist() -> None:
+    policy = PidPolicy(
+        enabled=True,
+        drive_allowlist=["drive-ok"],
+        folder_allowlist=["approved"],
+        location_blocklist=["investors"],
+    )
+    with pytest.raises(BlockedError):
+        policy.require_location(
+            Location(drive_id="drive-ok", item_id="01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K")
+        )
+
+
+def test_folder_allowlist_matches_path_not_filename() -> None:
     policy = PidPolicy(
         enabled=True,
         folder_allowlist=["shared documents/approved"],
@@ -68,6 +91,13 @@ def test_folder_allowlist_matches_path_or_url() -> None:
     )
     with pytest.raises(BlockedError):
         policy.require_location(Location(path="/drive/root:/Investors/PID"))
+    with pytest.raises(BlockedError):
+        policy.require_location(
+            Location(
+                path="/drive/root:/Investors/approved.xlsx",
+                web_url="https://contoso.sharepoint.com/Investors/approved.xlsx",
+            )
+        )
 
 
 def test_sensitivity_label_block() -> None:
@@ -76,11 +106,23 @@ def test_sensitivity_label_block() -> None:
         drive_allowlist=["drive-ok"],
         blocked_sensitivity_labels=["highly confidential", "label-id-1"],
     )
+    policy.require_location(Location(drive_id="drive-ok", path="/Public"))
     with pytest.raises(BlockedError) as blocked:
         policy.require_location(
-            Location(drive_id="drive-ok", labels=("Highly Confidential",))
+            Location(
+                drive_id="drive-ok",
+                path="/Public",
+                labels=("Highly Confidential",),
+            )
         )
     assert blocked.value.reason == "sensitivity_label"
+
+
+def test_unredactable_content_is_blocked() -> None:
+    policy = PidPolicy(enabled=True, mailbox_allowlist=["user@example.com"])
+    with pytest.raises(BlockedError) as blocked:
+        policy.require_unredactable_content()
+    assert blocked.value.reason == "unredactable_content"
 
 
 def test_redacts_ssn_and_ein_only() -> None:
@@ -104,6 +146,11 @@ def test_labels_from_graph_payload() -> None:
     )
     assert "label-id-1" in labels
     assert "Confidential" in labels
+    extracted = labels_from_graph(
+        {"labels": [{"sensitivityLabelId": "mip-9", "displayName": "Secret"}]}
+    )
+    assert "mip-9" in extracted
+    assert "Secret" in extracted
 
 
 def test_local_extractor_is_unavailable() -> None:

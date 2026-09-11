@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 SSN_RE = re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b")
 EIN_RE = re.compile(r"\b\d{2}-\d{7}\b")
@@ -31,10 +32,55 @@ def _normalize(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
-def _contains_any(haystack: str, needles: list[str]) -> bool:
-    if not haystack or not needles:
+def _dir_path(value: str | None) -> str:
+    raw = _normalize(value).replace("\\", "/")
+    if not raw:
+        return ""
+    raw = raw.split("?", 1)[0].split("#", 1)[0]
+    if "/root:" in raw:
+        raw = raw.split("/root:", 1)[-1]
+    raw = raw.strip("/")
+    if not raw:
+        return ""
+    last = raw.rsplit("/", 1)[-1]
+    if "." in last and not last.startswith("."):
+        parent = raw.rsplit("/", 1)[0] if "/" in raw else ""
+        return parent
+    return raw
+
+
+def _url_dir(value: str | None) -> str:
+    raw = _normalize(value)
+    if not raw:
+        return ""
+    if "://" in raw:
+        parsed = urlparse(raw)
+        return _dir_path(parsed.path)
+    return _dir_path(raw)
+
+
+def _folder_prefix_match(pathish: str, allowlist: list[str]) -> bool:
+    if not pathish:
         return False
-    return any(needle in haystack for needle in needles)
+    candidate = pathish.strip("/")
+    for entry in allowlist:
+        needle = _dir_path(entry) or _normalize(entry).strip("/")
+        if not needle:
+            continue
+        if candidate == needle or candidate.startswith(needle + "/"):
+            return True
+        if f"/{needle}/" in f"/{candidate}/":
+            return True
+    return False
+
+
+def _exact_or_id_match(values: list[str], allowlist: list[str]) -> bool:
+    for value in values:
+        if not value:
+            continue
+        if value in allowlist:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -77,16 +123,27 @@ class PidPolicy:
             redact_identifiers=bool(getattr(config, "pidRedactIdentifiers", True)),
         )
 
+    def needs_item_metadata(self) -> bool:
+        return bool(
+            self.folder_allowlist
+            or self.location_blocklist
+            or self.blocked_sensitivity_labels
+        )
+
     def require_mailbox(self, mailbox: str | None) -> None:
         if not self.enabled:
             return
         normalized = _normalize(mailbox)
-        if not normalized:
-            return
-        if normalized in self.mailbox_blocklist:
+        if normalized and normalized in self.mailbox_blocklist:
             raise BlockedError("mailbox_blocklisted")
-        if self.mailbox_allowlist and normalized not in self.mailbox_allowlist:
+        if not self.mailbox_allowlist:
             raise BlockedError("mailbox_not_allowlisted")
+        if not normalized or normalized not in self.mailbox_allowlist:
+            raise BlockedError("mailbox_not_allowlisted")
+
+    def require_unredactable_content(self) -> None:
+        if self.enabled:
+            raise BlockedError("unredactable_content")
 
     def require_location(self, location: Location) -> None:
         if not self.enabled:
@@ -124,18 +181,23 @@ class PidPolicy:
     def _is_blocklisted(self, location: Location) -> bool:
         if not self.location_blocklist:
             return False
-        haystack = " ".join(
+        identities = [
+            _normalize(location.site_id),
+            _normalize(location.drive_id),
+        ]
+        pathish = " ".join(
             part
-            for part in (
-                _normalize(location.site_id),
-                _normalize(location.drive_id),
-                _normalize(location.item_id),
-                _normalize(location.path),
-                _normalize(location.web_url),
-            )
+            for part in (_dir_path(location.path), _url_dir(location.web_url))
             if part
         )
-        return _contains_any(haystack, self.location_blocklist)
+        for entry in self.location_blocklist:
+            if any(entry == ident or entry in ident for ident in identities if ident):
+                return True
+            if pathish and entry in pathish:
+                return True
+        if not pathish:
+            return True
+        return False
 
     def _is_allowlisted(self, location: Location) -> bool:
         has_any_allowlist = bool(
@@ -144,27 +206,29 @@ class PidPolicy:
         if not has_any_allowlist:
             return False
         matched = False
-        site_ok, site_matched = _allowlist_category(
-            [_normalize(location.site_id), _normalize(location.web_url)],
-            self.site_allowlist,
-        )
-        if not site_ok:
-            return False
-        matched = matched or site_matched
-        drive_ok, drive_matched = _allowlist_category(
-            [_normalize(location.drive_id), _normalize(location.web_url)],
-            self.drive_allowlist,
-        )
-        if not drive_ok:
-            return False
-        matched = matched or drive_matched
-        folder_ok, folder_matched = _allowlist_category(
-            [_normalize(location.path), _normalize(location.web_url)],
-            self.folder_allowlist,
-        )
-        if not folder_ok:
-            return False
-        matched = matched or folder_matched
+        if self.site_allowlist:
+            site_values = [_normalize(location.site_id)]
+            if _exact_or_id_match(site_values, self.site_allowlist):
+                matched = True
+            elif _folder_prefix_match(_url_dir(location.web_url), self.site_allowlist):
+                matched = True
+            elif _normalize(location.site_id) or _url_dir(location.web_url):
+                return False
+        if self.drive_allowlist:
+            drive_values = [_normalize(location.drive_id)]
+            if _exact_or_id_match(drive_values, self.drive_allowlist):
+                matched = True
+            elif _folder_prefix_match(_url_dir(location.web_url), self.drive_allowlist):
+                matched = True
+            elif _normalize(location.drive_id) or _url_dir(location.web_url):
+                return False
+        if self.folder_allowlist:
+            pathish = _dir_path(location.path) or _url_dir(location.web_url)
+            if not pathish:
+                return False
+            if not _folder_prefix_match(pathish, self.folder_allowlist):
+                return False
+            matched = True
         return matched
 
     def _has_blocked_label(self, labels: tuple[str, ...]) -> bool:
@@ -178,34 +242,30 @@ def _normalized_list(values: list[str] | tuple[str, ...] | None) -> list[str]:
     return [_normalize(value) for value in (values or []) if _normalize(value)]
 
 
-def _allowlist_category(
-    candidates: list[str], allowlist: list[str]
-) -> tuple[bool, bool]:
-    if not allowlist:
-        return True, False
-    haystack = " ".join(part for part in candidates if part)
-    if not haystack:
-        return True, False
-    if _contains_any(haystack, allowlist):
-        return True, True
-    return False, False
-
-
 def labels_from_graph(payload: dict[str, Any] | None) -> tuple[str, ...]:
     if not isinstance(payload, dict):
         return ()
     labels: list[str] = []
-    for key in ("sensitivityLabel", "sensitivityLabelAssignment"):
-        raw = payload.get(key)
+
+    def collect(raw: Any) -> None:
         if isinstance(raw, dict):
-            for field_name in ("id", "displayName", "name"):
+            for field_name in (
+                "id",
+                "displayName",
+                "name",
+                "sensitivityLabelId",
+            ):
                 value = raw.get(field_name)
                 if isinstance(value, str) and value.strip():
                     labels.append(value)
             nested = raw.get("sensitivityLabel")
-            if isinstance(nested, dict):
-                for field_name in ("id", "displayName", "name"):
-                    value = nested.get(field_name)
-                    if isinstance(value, str) and value.strip():
-                        labels.append(value)
+            if nested is not None and nested is not raw:
+                collect(nested)
+        elif isinstance(raw, list):
+            for item in raw:
+                collect(item)
+
+    collect(payload.get("sensitivityLabel"))
+    collect(payload.get("sensitivityLabelAssignment"))
+    collect(payload.get("labels"))
     return tuple(labels)
