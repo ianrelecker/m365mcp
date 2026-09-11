@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import io
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -82,7 +82,7 @@ from .pid_policy import PidPolicy
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class _PdfRenderError(RuntimeError):
@@ -1721,7 +1721,7 @@ class MicrosoftGraphClient:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         start_value = start or _utc_now_iso()
         end_value = end or (
-            datetime.now(UTC) + timedelta(days=7)
+            datetime.now(timezone.utc) + timedelta(days=7)
         ).isoformat().replace("+00:00", "Z")
         base = self._base_path(normalized_mailbox)
         params = httpx.QueryParams(
