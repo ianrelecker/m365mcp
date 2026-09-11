@@ -9,14 +9,14 @@ description = "Local MCP server for one Microsoft 365 user with delegated Micros
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "cryptography>=42.0.0",
+  "cryptography>=50.0.0",
   "httpx>=0.27.0",
-  "mcp[cli]>=1.27.0",
+  "mcp[cli]>=1.28.1,<2",  # 2.x is a different HTTP stack; stay on 1.x until we port.
   "pillow>=12.3.0",
-  "pypdf>=5.0.0",
+  "pypdf>=6.16.1",
   "pypdfium2>=5.12.1",
   "python-dotenv>=1.0.1",
-  "starlette>=0.37.2",
+  "starlette>=1.3.1",
   "uvicorn>=0.30.0",
 ]
 
