@@ -16,7 +16,8 @@ from mcp.types import ContentBlock, ImageContent, TextContent
 from pydantic import Field
 
 from m365_mcp.audit import LocalAuditLogger
-from m365_mcp.config import AppConfig, load_config
+from m365_mcp.config import AppConfig, load_config, mail_send_enabled_from_env
+from m365_mcp.pid_policy import BlockedError, PidPolicy
 from m365_mcp.helper_app import create_helper_app
 from m365_mcp.excel_workbook import (
     ExcelWorkbookClient,
@@ -134,9 +135,12 @@ def create_runtime(
         timeout=30.0,
     )
     auth = MicrosoftAuthService(resolved_config, resolved_http_client)
-    graph = MicrosoftGraphClient(auth, resolved_http_client)
-    sharepoint = SharePointFilesClient(auth, resolved_http_client)
-    excel = ExcelWorkbookClient(auth, resolved_http_client)
+    pid_policy = PidPolicy.from_config(resolved_config)
+    graph = MicrosoftGraphClient(auth, resolved_http_client, pid_policy=pid_policy)
+    sharepoint = SharePointFilesClient(
+        auth, resolved_http_client, pid_policy=pid_policy
+    )
+    excel = ExcelWorkbookClient(auth, resolved_http_client, pid_policy=pid_policy)
     audit_logger = LocalAuditLogger(
         enabled=resolved_config.auditLogEnabled,
         file_path=resolved_config.auditLogFile,
@@ -195,11 +199,12 @@ class _AuditedFastMCP(FastMCP):
         try:
             result = await super().call_tool(name, arguments)
         except Exception as error:
+            blocked = _unwrap_blocked_error(error)
             await self._record_audit_event(
                 tool_name=name,
                 arguments=arguments,
-                outcome="error",
-                error=error,
+                outcome="blocked" if blocked is not None else "error",
+                error=blocked or error,
             )
             raise
 
@@ -362,7 +367,22 @@ def _image_content_blocks(
     return blocks
 
 
-def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
+def _unwrap_blocked_error(error: BaseException) -> BlockedError | None:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, BlockedError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _create_server(
+    runtime_provider: _RuntimeProvider,
+    *,
+    mail_send_enabled: bool = False,
+) -> FastMCP:
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastMCP) -> Iterator[dict[str, object]]:
         runtime = runtime_provider.get()
@@ -427,6 +447,8 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             requiredScopes=status.requiredScopes,
             grantedScopes=status.grantedScopes,
             missingScopes=status.missingScopes,
+            mailSendEnabled=runtime.config.mailSendEnabled,
+            pidSafeMode=runtime.config.pidSafeMode,
             localStatusUrl=runtime.config.localBaseUrl,
             microsoftConnectUrl=urljoin(
                 runtime.config.localBaseUrl, "/auth/microsoft/start"
@@ -800,52 +822,53 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             from_=from_,
         )
 
-    @mcp.tool(
-        name="mail_send",
-        description=(
-            "Send a new email in one call. Prefer mail_create_draft first when "
-            "the user has not explicitly approved sending."
-        ),
-    )
-    async def mail_send(
-        subject: str,
-        body: str,
-        mailbox: str | None = None,
-        to: list[str] = [],
-        cc: list[str] | None = None,
-        bcc: list[str] | None = None,
-        bodyType: Literal["text", "html"] = "text",
-        from_: Annotated[
-            str | None,
-            Field(validation_alias="from", serialization_alias="from_"),
-        ] = None,
-        saveToSentItems: bool = True,
-    ) -> MailSendResult:
-        runtime = runtime_provider.get()
-        return await runtime.graph.send_mail(
-            mailbox=mailbox,
-            subject=subject,
-            to=to,
-            cc=cc,
-            bcc=bcc,
-            body=body,
-            bodyType=bodyType,
-            from_=from_,
-            saveToSentItems=saveToSentItems,
+    if mail_send_enabled:
+        @mcp.tool(
+            name="mail_send",
+            description=(
+                "Send a new email in one call. Prefer mail_create_draft first when "
+                "the user has not explicitly approved sending."
+            ),
         )
+        async def mail_send(
+            subject: str,
+            body: str,
+            mailbox: str | None = None,
+            to: list[str] = [],
+            cc: list[str] | None = None,
+            bcc: list[str] | None = None,
+            bodyType: Literal["text", "html"] = "text",
+            from_: Annotated[
+                str | None,
+                Field(validation_alias="from", serialization_alias="from_"),
+            ] = None,
+            saveToSentItems: bool = True,
+        ) -> MailSendResult:
+            runtime = runtime_provider.get()
+            return await runtime.graph.send_mail(
+                mailbox=mailbox,
+                subject=subject,
+                to=to,
+                cc=cc,
+                bcc=bcc,
+                body=body,
+                bodyType=bodyType,
+                from_=from_,
+                saveToSentItems=saveToSentItems,
+            )
 
-    @mcp.tool(
-        name="mail_send_draft",
-        description=(
-            "Send an existing draft message by ID. Use mailbox for shared/delegated mailboxes."
-        ),
-    )
-    async def mail_send_draft(
-        messageId: str,
-        mailbox: str | None = None,
-    ) -> MailSendDraftResult:
-        runtime = runtime_provider.get()
-        return await runtime.graph.send_draft(mailbox=mailbox, messageId=messageId)
+        @mcp.tool(
+            name="mail_send_draft",
+            description=(
+                "Send an existing draft message by ID. Use mailbox for shared/delegated mailboxes."
+            ),
+        )
+        async def mail_send_draft(
+            messageId: str,
+            mailbox: str | None = None,
+        ) -> MailSendDraftResult:
+            runtime = runtime_provider.get()
+            return await runtime.graph.send_draft(mailbox=mailbox, messageId=messageId)
 
     @mcp.tool(
         name="mail_move",
@@ -1023,7 +1046,11 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         name="mail_create_reply_draft",
         description=(
             "Create a reply or reply-all draft in the original message thread. "
-            "Use mail_send_draft later to send it."
+            + (
+                "Use mail_send_draft later to send it."
+                if mail_send_enabled
+                else "Sending is disabled; the user sends the draft from Outlook."
+            )
         ),
     )
     async def mail_create_reply_draft(
@@ -1042,28 +1069,29 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             bodyType=bodyType,
         )
 
-    @mcp.tool(
-        name="mail_send_reply",
-        description=(
-            "Send a reply or reply-all immediately in the original thread. "
-            "Prefer mail_create_reply_draft first when approval is not explicit."
-        ),
-    )
-    async def mail_send_reply(
-        messageId: str,
-        comment: str,
-        mailbox: str | None = None,
-        replyAll: bool = False,
-        bodyType: Literal["text", "html"] = "html",
-    ) -> MailSendResult:
-        runtime = runtime_provider.get()
-        return await runtime.graph.send_reply(
-            mailbox=mailbox,
-            messageId=messageId,
-            comment=comment,
-            replyAll=replyAll,
-            bodyType=bodyType,
+    if mail_send_enabled:
+        @mcp.tool(
+            name="mail_send_reply",
+            description=(
+                "Send a reply or reply-all immediately in the original thread. "
+                "Prefer mail_create_reply_draft first when approval is not explicit."
+            ),
         )
+        async def mail_send_reply(
+            messageId: str,
+            comment: str,
+            mailbox: str | None = None,
+            replyAll: bool = False,
+            bodyType: Literal["text", "html"] = "html",
+        ) -> MailSendResult:
+            runtime = runtime_provider.get()
+            return await runtime.graph.send_reply(
+                mailbox=mailbox,
+                messageId=messageId,
+                comment=comment,
+                replyAll=replyAll,
+                bodyType=bodyType,
+            )
 
     @mcp.tool(
         name="mail_list_categories",
@@ -2428,19 +2456,28 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
 
 
 def create_mcp_server(runtime: RuntimeServices) -> FastMCP:
-    return _create_server(_RuntimeProvider(lambda: runtime))
+    return _create_server(
+        _RuntimeProvider(lambda: runtime),
+        mail_send_enabled=runtime.config.mailSendEnabled,
+    )
 
 
 def create_default_server() -> FastMCP:
-    return _create_server(_RuntimeProvider(create_runtime))
+    return _create_server(
+        _RuntimeProvider(create_runtime),
+        mail_send_enabled=mail_send_enabled_from_env(),
+    )
 
 
-mcp = create_default_server()
+mcp = _create_server(
+    _RuntimeProvider(create_runtime),
+    mail_send_enabled=False,
+)
 app = mcp
 
 
 def main() -> None:
-    mcp.run()
+    create_default_server().run()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import httpx
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
+from m365_mcp.pid_policy import BlockedError
 from m365_mcp.models import (
     AccountInfo,
     AttachmentImage,
@@ -139,8 +140,6 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "mail_get",
             "mail_list_drafts",
             "mail_create_draft",
-            "mail_send",
-            "mail_send_draft",
             "mail_move",
             "mail_list_attachments",
             "mail_get_attachment_content",
@@ -149,7 +148,6 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "mail_get_attachment_pdf_pages",
             "mail_get_thread",
             "mail_create_reply_draft",
-            "mail_send_reply",
             "mail_list_categories",
             "mail_set_categories",
             "mail_add_categories",
@@ -599,5 +597,81 @@ async def test_mcp_server_skips_audit_file_when_disabled(config_factory, tmp_pat
         await session.call_tool("auth_status", {})
 
     assert not audit_file.exists()
+
+    await http_client.aclose()
+
+
+SEND_TOOLS = {"mail_send", "mail_send_draft", "mail_send_reply"}
+
+
+@pytest.mark.anyio
+async def test_mcp_server_registers_send_tools_when_enabled(config_factory) -> None:
+    http_client = httpx.AsyncClient()
+    runtime = RuntimeServices(
+        config=config_factory(
+            localBaseUrl="http://localhost:8787",
+            mailSendEnabled=True,
+        ),
+        microsoft_auth=StubAuthService(),
+        graph=StubGraphClient(),
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(server, raise_exceptions=True) as session:
+        tools = await session.list_tools()
+        assert SEND_TOOLS <= {tool.name for tool in tools.tools}
+
+    await http_client.aclose()
+
+
+class BlockingGraphClient(StubGraphClient):
+    async def list_messages(self, **kwargs):
+        raise BlockedError("mailbox_not_allowlisted")
+
+
+@pytest.mark.anyio
+async def test_mcp_server_audits_blocked_pid_requests(config_factory, tmp_path) -> None:
+    audit_file = tmp_path / "audit" / "blocked.jsonl"
+    http_client = httpx.AsyncClient()
+    runtime = RuntimeServices(
+        config=config_factory(
+            localBaseUrl="http://localhost:8787",
+            auditLogFile=audit_file,
+            pidSafeMode=True,
+        ),
+        microsoft_auth=StubAuthService(),
+        graph=BlockingGraphClient(),
+        sharepoint=SharePointFilesClient(StubAuthService(), http_client),
+        excel=ExcelWorkbookClient(StubAuthService(), http_client),
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(
+        server,
+        raise_exceptions=False,
+    ) as session:
+        failed = await session.call_tool(
+            "mail_list",
+            {"mailbox": "investor@example.com"},
+        )
+
+    assert failed.isError is True
+    records = [
+        json.loads(line) for line in audit_file.read_text("utf-8").splitlines()
+    ]
+    assert records[0]["tool"] == "mail_list"
+    assert records[0]["outcome"] == "blocked"
+    assert records[0]["reason"] == "mailbox_not_allowlisted"
+    serialized = json.dumps(records[0])
+    assert "body" not in records[0]
+    assert "123-45-6789" not in serialized
 
     await http_client.aclose()

@@ -42,6 +42,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from .microsoft_auth import MicrosoftAuthService
+from .pid_policy import Location, PidPolicy, labels_from_graph
 
 GRAPH_V1 = "https://graph.microsoft.com/v1.0"
 
@@ -154,9 +155,11 @@ class SharePointFilesClient:
         self,
         auth_service: MicrosoftAuthService,
         http_client: httpx.AsyncClient | None = None,
+        pid_policy: PidPolicy | None = None,
     ) -> None:
         self._auth_service = auth_service
         self._http_client = http_client
+        self._pid_policy = pid_policy or PidPolicy.disabled()
 
     # ---- discovery -------------------------------------------------------- #
     async def search_sites(self, *, query: str, top: int = 25) -> SitesResult:
@@ -165,9 +168,14 @@ class SharePointFilesClient:
             f"/sites?search={quote(query)}&$top={min(top, 100)}"
             "&$select=id,name,displayName,webUrl"
         )
+        sites = [
+            site
+            for site in (self._map_site(s) for s in data.get("value", []))
+            if self._pid_policy.allows_location(self._site_location(site))
+        ]
         return SitesResult(
             query=query,
-            sites=[self._map_site(s) for s in data.get("value", [])],
+            sites=sites,
         )
 
     async def get_site_by_path(
@@ -180,25 +188,40 @@ class SharePointFilesClient:
             f"/sites/{quote(hostname, safe='')}:/sites/{quote(path)}"
             "?$select=id,name,displayName,webUrl"
         )
-        return self._map_site(data)
+        site = self._map_site(data)
+        self._pid_policy.require_location(self._site_location(site))
+        return site
 
     async def list_drives(self, *, siteId: str) -> DrivesResult:
         """List a site's document libraries (each library is a 'drive')."""
+        self._pid_policy.require_location(Location(site_id=siteId))
         data = await self._request(
             f"/sites/{quote(siteId, safe='')}/drives"
             "?$select=id,name,driveType,webUrl"
         )
+        drives = [
+            DriveInfo(
+                id=d["id"],
+                name=d.get("name"),
+                driveType=d.get("driveType"),
+                webUrl=d.get("webUrl"),
+            )
+            for d in data.get("value", [])
+        ]
+        drives = [
+            drive
+            for drive in drives
+            if self._pid_policy.allows_location(
+                Location(
+                    site_id=siteId,
+                    drive_id=drive.id,
+                    web_url=drive.webUrl,
+                )
+            )
+        ]
         return DrivesResult(
             siteId=siteId,
-            drives=[
-                DriveInfo(
-                    id=d["id"],
-                    name=d.get("name"),
-                    driveType=d.get("driveType"),
-                    webUrl=d.get("webUrl"),
-                )
-                for d in data.get("value", [])
-            ],
+            drives=drives,
         )
 
     # ---- browse ----------------------------------------------------------- #
@@ -218,6 +241,11 @@ class SharePointFilesClient:
         (e.g. 'Shared Active Deals/4. Claude Projects'); omit both for the root.
         Optionally filter to file extensions (e.g. ['xlsx','pdf']) or folders.
         """
+        self._pid_policy.require_location(
+            await self._resolved_item_location(
+                drive_id=driveId, item_id=itemId, path=path
+            )
+        )
         if itemId:
             base = f"/drives/{quote(driveId, safe='')}/items/{quote(itemId, safe='')}/children"
         elif path:
@@ -230,7 +258,13 @@ class SharePointFilesClient:
             "&$select=id,name,folder,file,size,webUrl,lastModifiedDateTime,parentReference"
         )
         data = await self._request(url)
-        items = [self._map_item(i, driveId) for i in data.get("value", [])]
+        items = [
+            item
+            for item in (
+                self._keep_mapped(i, driveId) for i in data.get("value", [])
+            )
+            if item is not None
+        ]
         items = self._filter_items(items, extensions=extensions, foldersOnly=foldersOnly)
         return DriveItemsResult(
             driveId=driveId,
@@ -249,12 +283,21 @@ class SharePointFilesClient:
         extensions: list[str] | None = None,
     ) -> DriveItemsResult:
         """Search for files/folders by name within a single document library."""
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId)
+        )
         data = await self._request(
             f"/drives/{quote(driveId, safe='')}/root/search(q='{self._q(query)}')"
             f"?$top={min(top, 200)}"
             "&$select=id,name,folder,file,size,webUrl,lastModifiedDateTime,parentReference"
         )
-        items = [self._map_item(i, driveId) for i in data.get("value", [])]
+        items = [
+            item
+            for item in (
+                self._keep_mapped(i, driveId) for i in data.get("value", [])
+            )
+            if item is not None
+        ]
         items = self._filter_items(items, extensions=extensions)
         return DriveItemsResult(driveId=driveId, items=items)
 
@@ -284,9 +327,9 @@ class SharePointFilesClient:
                 for hit in container.get("hits", []):
                     resource = hit.get("resource") or {}
                     parent = resource.get("parentReference") or {}
-                    items.append(
-                        self._map_item(resource, parent.get("driveId"))
-                    )
+                    item = self._keep_mapped(resource, parent.get("driveId"))
+                    if item is not None:
+                        items.append(item)
         items = self._filter_items(items, extensions=extensions)
         return DriveItemsResult(items=items)
 
@@ -299,13 +342,26 @@ class SharePointFilesClient:
             "?$select=id,name,folder,file,size,webUrl,lastModifiedDateTime,parentReference"
         )
         parent = data.get("parentReference") or {}
-        return self._map_item(data, parent.get("driveId"))
+        item = self._map_item(data, parent.get("driveId"))
+        labels = labels_from_graph(data)
+        if (
+            self._pid_policy.enabled
+            and self._pid_policy.blocked_sensitivity_labels
+            and not labels
+            and item.driveId
+        ):
+            labels = await self._extract_labels(item.driveId, item.itemId)
+        self._pid_policy.require_location(self._item_location(item, labels=labels))
+        return item
 
     # ---- sharing ---------------------------------------------------------- #
     async def list_permissions(
         self, *, driveId: str, itemId: str
     ) -> SharingPermissionsResult:
         """List the effective permissions visible to the signed-in user."""
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         data = await self._request(f"{self._item_path(driveId, itemId)}/permissions")
         raw_permissions = list(data.get("value", []))
         next_link = data.get("@odata.nextLink")
@@ -337,6 +393,9 @@ class SharePointFilesClient:
         expirationDateTime: str | None = None,
     ) -> SharingPermissionResult:
         """Create or return an existing sharing link for an item."""
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         body: dict[str, Any] = {
             "type": linkType,
             "scope": scope,
@@ -366,6 +425,9 @@ class SharePointFilesClient:
         message: str | None = None,
     ) -> SharingGrantResult:
         """Grant named recipients read or write access to an item."""
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         addresses = [address.strip() for address in recipients if address.strip()]
         if not addresses:
             raise ValueError("At least one recipient email address is required.")
@@ -421,6 +483,9 @@ class SharePointFilesClient:
         self, *, driveId: str, itemId: str, permissionId: str
     ) -> SharingRevokeResult:
         """Revoke a non-inherited direct permission or entire sharing link."""
+        self._pid_policy.require_location(
+            await self._resolved_item_location(drive_id=driveId, item_id=itemId)
+        )
         await self._request(
             f"{self._item_path(driveId, itemId)}/permissions/"
             f"{quote(permissionId, safe='')}",
@@ -433,6 +498,81 @@ class SharePointFilesClient:
         )
 
     # ---- mapping / helpers ------------------------------------------------ #
+    def _site_location(self, site: SiteInfo) -> Location:
+        return Location(site_id=site.id, web_url=site.webUrl)
+
+    def _item_location(
+        self,
+        item: DriveItemInfo,
+        *,
+        labels: tuple[str, ...] = (),
+    ) -> Location:
+        return Location(
+            drive_id=item.driveId,
+            item_id=item.itemId,
+            path=item.path,
+            web_url=item.webUrl,
+            labels=labels,
+        )
+
+    async def _extract_labels(self, drive_id: str, item_id: str) -> tuple[str, ...]:
+        try:
+            data = await self._request(
+                f"{self._item_path(drive_id, item_id)}/extractSensitivityLabels",
+                method="POST",
+            )
+        except RuntimeError:
+            return ()
+        return labels_from_graph(data if isinstance(data, dict) else None)
+
+    async def _resolved_item_location(
+        self,
+        *,
+        drive_id: str | None = None,
+        item_id: str | None = None,
+        path: str | None = None,
+        web_url: str | None = None,
+        labels: tuple[str, ...] = (),
+        site_id: str | None = None,
+    ) -> Location:
+        resolved_path = path
+        resolved_url = web_url
+        resolved_labels = labels
+        if (
+            self._pid_policy.enabled
+            and self._pid_policy.needs_item_metadata()
+            and drive_id
+            and item_id
+            and (not resolved_path or not resolved_labels)
+        ):
+            data = await self._request(
+                f"/drives/{quote(drive_id, safe='')}/items/{quote(item_id, safe='')}"
+                "?$select=id,webUrl,parentReference"
+            )
+            parent = data.get("parentReference") or {}
+            resolved_path = resolved_path or parent.get("path")
+            resolved_url = resolved_url or data.get("webUrl")
+            if self._pid_policy.blocked_sensitivity_labels and not resolved_labels:
+                resolved_labels = await self._extract_labels(drive_id, item_id)
+        return Location(
+            site_id=site_id,
+            drive_id=drive_id,
+            item_id=item_id,
+            path=resolved_path,
+            web_url=resolved_url,
+            labels=resolved_labels,
+        )
+
+    def _keep_mapped(
+        self, data: dict[str, Any], driveId: str | None
+    ) -> DriveItemInfo | None:
+        item = self._map_item(data, driveId)
+        if not self._pid_policy.allows_location(
+            self._item_location(item, labels=labels_from_graph(data))
+        ):
+            return None
+        return item
+
     @staticmethod
     def _map_site(data: dict[str, Any]) -> SiteInfo:
         return SiteInfo(

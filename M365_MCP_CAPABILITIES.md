@@ -30,9 +30,18 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 ## Sending
 
-- Use `mail_create_draft` plus `mail_send_draft` when the user has not explicitly approved the exact final email.
-- Use `mail_send` only when the user clearly asked to send a new message now.
-- Use `mail_create_reply_draft` for safer thread replies, or `mail_send_reply` only when the user clearly approved sending the reply now.
+- Mail sending is disabled unless `auth_status.mailSendEnabled` is true. In that default configuration, create drafts with `mail_create_draft` or `mail_create_reply_draft` and let the user send them from Outlook.
+- When sending is enabled, use `mail_create_draft` plus `mail_send_draft` when the user has not explicitly approved the exact final email.
+- Use `mail_send` only when sending is enabled and the user clearly asked to send a new message now.
+- Use `mail_create_reply_draft` for safer thread replies, or `mail_send_reply` only when sending is enabled and the user clearly approved sending the reply now.
+
+## PID-safe mode
+
+- If `auth_status.pidSafeMode` is true, do not expect access to investor PID locations. Allowlisted mailboxes, sites, libraries, and folders are the primary control. An empty mailbox allowlist blocks all mail, including the signed-in mailbox — list every mailbox that should be reachable.
+- Blocked requests return an error and are audited as `blocked` without the protected content.
+- Identifiers such as SSNs and tax IDs in returned text are redacted. Pattern matching is an extra safeguard, not a guarantee.
+- Image attachments, inline pictures, and PDF page renders are blocked in PID-safe mode because they cannot be redacted. Use `mail_get_attachment_content` for text-layer PDF extraction only.
+- There is no local PID extractor yet. Do not try to read subscription agreements or other blocked investor documents into this conversation.
 
 ## Rules
 
@@ -75,7 +84,7 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Use `mail_get_thread` with either `messageId` or `conversationId` to inspect a conversation.
 - Thread messages are sorted locally by received time when available to avoid Microsoft Graph's inefficient filtered-sort query path.
 - Use `mail_create_reply_draft` to create reply or reply-all drafts in the thread.
-- Use `mail_send_draft` only after the draft looks correct. Use `mail_send_reply` only when immediate sending is explicit.
+- When sending is enabled, use `mail_send_draft` only after the draft looks correct. Use `mail_send_reply` only when immediate sending is explicit. Otherwise leave the draft for the user to send in Outlook.
 
 ## Contacts
 

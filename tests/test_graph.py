@@ -8,6 +8,7 @@ import pytest
 
 from m365_mcp import microsoft_graph as graph_module
 from m365_mcp.microsoft_graph import MicrosoftGraphClient
+from m365_mcp.pid_policy import BlockedError, PidPolicy
 
 
 class StaticAuthService:
@@ -1573,3 +1574,45 @@ async def test_list_and_create_events_and_graph_errors() -> None:
         await graph.get_message(messageId="bad-id")
 
     await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_pid_safe_mode_blocks_non_allowlisted_mailbox() -> None:
+    client = httpx.AsyncClient()
+    graph = MicrosoftGraphClient(
+        StaticAuthService(),
+        client,
+        pid_policy=PidPolicy(
+            enabled=True,
+            mailbox_allowlist=["partners@example.com"],
+        ),
+    )
+    with pytest.raises(BlockedError) as blocked:
+        await graph.list_messages(mailbox="investor@example.com", folder="Inbox")
+    assert blocked.value.reason == "mailbox_not_allowlisted"
+    with pytest.raises(BlockedError) as blocked:
+        await graph.get_attachment_pdf_pages(
+            mailbox="partners@example.com",
+            messageId="m1",
+            attachmentId="a1",
+        )
+    assert blocked.value.reason == "unredactable_content"
+    await client.aclose()
+
+
+def test_pid_safe_mode_redacts_message_identifiers() -> None:
+    graph = MicrosoftGraphClient(
+        StaticAuthService(),
+        pid_policy=PidPolicy(enabled=True),
+    )
+    mapped = graph._map_full_message(
+        {
+            "id": "m1",
+            "subject": "SSN 123-45-6789",
+            "bodyPreview": "EIN 12-3456789",
+            "body": {"contentType": "text", "content": "tax id 123-45-6789"},
+        }
+    )
+    assert "123-45-6789" not in mapped.subject
+    assert "12-3456789" not in mapped.bodyPreview
+    assert "123-45-6789" not in mapped.body.content
