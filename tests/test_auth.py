@@ -91,6 +91,43 @@ async def test_status_reports_missing_scopes(config_factory) -> None:
 
 
 @pytest.mark.anyio
+async def test_status_counts_refresh_token_as_offline_access(config_factory) -> None:
+    # Real Microsoft token responses omit offline_access from "scope" even
+    # though they return a refresh token.
+    granted = " ".join(
+        scope for scope in config_factory().microsoft.scopes if scope != "offline_access"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "expires_in": 3600,
+                "scope": granted,
+                "id_token": make_jwt({"preferred_username": "user@example.com"}),
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    auth = MicrosoftAuthService(config_factory(), client)
+    state = parse_qs(urlparse(auth.build_authorization_url()).query)["state"][0]
+    await auth.handle_authorization_code_callback(
+        code="auth-code",
+        state=state,
+        error=None,
+        errorDescription=None,
+    )
+
+    status = await auth.get_status()
+    assert status.missingScopes == []
+    assert status.grantedScopes.count("offline_access") == 1
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_refresh_token_flow_does_not_send_code_verifier(config_factory) -> None:
     form_bodies: list[dict[str, list[str]]] = []
 

@@ -184,6 +184,13 @@ class MicrosoftAuthService:
             )
 
         granted_scopes = self._parse_scope_string(tokens.scope)
+        # Microsoft leaves offline_access out of the token response's "scope"
+        # even when it granted it. The stored refresh token is the proof: a
+        # sign-in without one is refused, and refresh reuses it.
+        if tokens.refreshToken and "offline_access" not in {
+            scope.lower() for scope in granted_scopes
+        }:
+            granted_scopes.append("offline_access")
         return MicrosoftConnectionStatus(
             connected=True,
             account=tokens.account,
