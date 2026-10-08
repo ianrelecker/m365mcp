@@ -176,7 +176,11 @@
     },
     {
       "name": "mail_get",
-      "description": "Get the full details and body of one message by ID. Use mailbox for shared/delegated mailboxes."
+      "description": "Get the details and body of one message by ID. By default the body is plain text and only the part new to this message (no quoted thread), which is far smaller than the raw HTML; message.bodyScope\u2026"
+    },
+    {
+      "name": "mail_get_messages",
+      "description": "Get several messages by ID in one call (up to 50), with the same bodyFormat/bodyScope options and defaults as mail_get. Results keep the input order; a message that cannot be read carries an error\u2026"
     },
     {
       "name": "mail_list_drafts",
@@ -220,7 +224,7 @@
     },
     {
       "name": "mail_get_thread",
-      "description": "Get messages in the same conversation by messageId or conversationId."
+      "description": "Get message summaries in the same conversation by messageId or conversationId, including sent replies. Returns the newest `top` messages newest first by default; order=\"oldest\" returns the oldest\u2026"
     },
     {
       "name": "mail_create_reply_draft",

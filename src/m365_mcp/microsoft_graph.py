@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -55,6 +56,8 @@ from .models import (
     MailFolderInfo,
     MailFolderTreeNode,
     MailFolderTreeResult,
+    MailGetMessagesItem,
+    MailGetMessagesResult,
     MailGetResult,
     MailInlineImagesResult,
     MailListAttachmentsResult,
@@ -99,6 +102,15 @@ MESSAGE_FULL_SELECT = (
     "receivedDateTime,sentDateTime,bodyPreview,body,webLink,isDraft,isRead,"
     "hasAttachments,importance,categories,flag,inferenceClassification,"
     "parentFolderId,internetMessageId,conversationId"
+)
+# Upper bound for mail_get_messages; Graph $batch takes 20 per call, so this
+# is at most three round trips.
+MAIL_GET_MESSAGES_LIMIT = 50
+# How many thread messages get_thread reads before sorting. The filter cannot
+# be combined with $orderby, so the whole thread is read and sorted locally.
+THREAD_FETCH_LIMIT = 500
+_HTML_TAG_RE = re.compile(
+    r"<(head|style|script)\b.*?</\1\s*>|<[^>]*>", re.IGNORECASE | re.DOTALL
 )
 MAIL_FOLDER_SELECT = (
     "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden"
@@ -348,20 +360,74 @@ class MicrosoftGraphClient:
         *,
         mailbox: str | None = None,
         messageId: str,
+        bodyFormat: str = "text",
+        bodyScope: str = "new",
     ) -> MailGetResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
-        params = httpx.QueryParams(
-            {
-                "$select": MESSAGE_FULL_SELECT,
-            }
-        )
+        prefer = self._message_body_prefer(bodyFormat)
+        self._validate_body_scope(bodyScope)
         message = await self._request(
-            f"{base}/messages/{quote(messageId, safe='')}?{params}"
+            self._message_read_path(base, messageId, bodyScope),
+            headers={"Prefer": prefer},
         )
         return MailGetResult(
             mailbox=normalized_mailbox or "me",
-            message=self._map_full_message(message),
+            message=self._map_full_message(message, bodyScope=bodyScope),
+        )
+
+    async def get_messages(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageIds: list[str],
+        bodyFormat: str = "text",
+        bodyScope: str = "new",
+    ) -> MailGetMessagesResult:
+        """Read several messages in one call via Graph ``$batch``.
+
+        Results keep input order; a message that cannot be read carries an
+        ``error`` without failing the rest."""
+        if not messageIds:
+            raise ValueError("Provide at least one messageId")
+        if len(messageIds) > MAIL_GET_MESSAGES_LIMIT:
+            raise ValueError(
+                f"mail_get_messages reads at most {MAIL_GET_MESSAGES_LIMIT} "
+                f"messages per call; got {len(messageIds)}"
+            )
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        prefer = self._message_body_prefer(bodyFormat)
+        self._validate_body_scope(bodyScope)
+        responses = await self._batch(
+            [
+                {
+                    "id": str(index),
+                    "method": "GET",
+                    "url": self._message_read_path(base, message_id, bodyScope),
+                    "headers": {"Prefer": prefer},
+                }
+                for index, message_id in enumerate(messageIds)
+            ]
+        )
+        items: list[MailGetMessagesItem] = []
+        for index, message_id in enumerate(messageIds):
+            response = responses.get(str(index))
+            error = self._batch_error(response)
+            if error is not None or response is None:
+                items.append(MailGetMessagesItem(messageId=message_id, error=error))
+                continue
+            items.append(
+                MailGetMessagesItem(
+                    messageId=message_id,
+                    message=self._map_full_message(
+                        response.get("body") or {}, bodyScope=bodyScope
+                    ),
+                )
+            )
+        return MailGetMessagesResult(
+            mailbox=normalized_mailbox or "me",
+            messages=items,
         )
 
     async def list_drafts(
@@ -1122,7 +1188,10 @@ class MicrosoftGraphClient:
         messageId: str | None = None,
         conversationId: str | None = None,
         top: int = 50,
+        order: str = "newest",
     ) -> MailThreadResult:
+        if order not in ("newest", "oldest"):
+            raise ValueError('order must be "newest" or "oldest"')
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         resolved_conversation_id = conversationId
@@ -1136,7 +1205,7 @@ class MicrosoftGraphClient:
 
         params = httpx.QueryParams(
             {
-                "$top": str(min(top, 100)),
+                "$top": "100",
                 "$select": MESSAGE_SUMMARY_SELECT,
                 "$filter": (
                     "conversationId eq "
@@ -1144,15 +1213,27 @@ class MicrosoftGraphClient:
                 ),
             }
         )
-        result = await self._request(f"{base}/messages?{params}")
-        messages = [
-            self._map_message_summary(message) for message in result["value"]
-        ]
-        messages.sort(key=lambda message: message.receivedDateTime or "")
+        # Graph returns the filtered messages in no particular order, so read
+        # the whole thread (bounded) before picking the newest/oldest `top`.
+        raw_messages: list[dict[str, Any]] = []
+        next_path: str | None = f"{base}/messages?{params}"
+        while next_path and len(raw_messages) < THREAD_FETCH_LIMIT:
+            result = await self._request(next_path)
+            raw_messages.extend(result.get("value") or [])
+            next_path = self._nullable_string(result.get("@odata.nextLink"))
+        messages = [self._map_message_summary(message) for message in raw_messages]
+        messages.sort(
+            key=lambda message: message.receivedDateTime or "",
+            reverse=order == "newest",
+        )
+        limit = max(1, min(top, 100))
         return MailThreadResult(
             mailbox=normalized_mailbox or "me",
             conversationId=resolved_conversation_id,
-            messages=messages,
+            order=order,
+            messageCount=len(messages),
+            truncated=len(messages) > limit or next_path is not None,
+            messages=messages[:limit],
         )
 
     async def create_reply_draft(
@@ -2094,6 +2175,56 @@ class MicrosoftGraphClient:
 
         return data
 
+    async def _batch(
+        self, requests: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Send Graph ``POST /$batch`` requests, chunked to 20 per call.
+
+        Each entry is ``{"id", "method", "url", "headers"?}`` with ``url``
+        relative to ``/v1.0``. Returns raw inner responses keyed by id."""
+        responses: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(requests), 20):
+            payload = {"requests": requests[start : start + 20]}
+            data = await self._request("/$batch", method="POST", json_body=payload)
+            for response in (data or {}).get("responses", []):
+                responses[str(response.get("id"))] = response
+        return responses
+
+    @staticmethod
+    def _batch_error(response: dict[str, Any] | None) -> str | None:
+        """Error text for a failed inner ``$batch`` response, else None."""
+        if response is None:
+            return "no response returned for this request"
+        status = response.get("status")
+        if isinstance(status, int) and 200 <= status < 300:
+            return None
+        body = response.get("body")
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict):
+            code = error.get("code")
+            message = error.get("message")
+            detail = f"{code}: {message}" if code and message else code or message
+            if detail:
+                return f"Microsoft Graph request failed ({status}): {detail}"
+        return f"Microsoft Graph request failed ({status})"
+
+    @staticmethod
+    def _message_body_prefer(bodyFormat: str) -> str:
+        if bodyFormat not in ("text", "html"):
+            raise ValueError('bodyFormat must be "text" or "html"')
+        return f'IdType="ImmutableId", outlook.body-content-type="{bodyFormat}"'
+
+    @staticmethod
+    def _validate_body_scope(bodyScope: str) -> None:
+        if bodyScope not in ("new", "full"):
+            raise ValueError('bodyScope must be "new" or "full"')
+
+    @staticmethod
+    def _message_read_path(base: str, messageId: str, bodyScope: str) -> str:
+        select = MESSAGE_FULL_SELECT + (",uniqueBody" if bodyScope == "new" else "")
+        params = httpx.QueryParams({"$select": select})
+        return f"{base}/messages/{quote(messageId, safe='')}?{params}"
+
     async def _request_bytes(self, path: str) -> bytes:
         access_token = await self._auth_service.get_access_token()
         async with self._client() as client:
@@ -2728,8 +2859,17 @@ class MicrosoftGraphClient:
             conversationId=self._nullable_string(message.get("conversationId")),
         )
 
-    def _map_full_message(self, message: dict[str, Any]) -> FullMessage:
+    def _map_full_message(
+        self, message: dict[str, Any], *, bodyScope: str = "full"
+    ) -> FullMessage:
         body = message.get("body") or {}
+        returned_scope = "full"
+        unique_body = message.get("uniqueBody") or {}
+        # uniqueBody can come back empty (or as an empty HTML shell); then the
+        # full body is the only way to show what the message says.
+        if bodyScope == "new" and self._has_visible_text(unique_body):
+            body = unique_body
+            returned_scope = "new"
         return FullMessage(
             id=str(message["id"]),
             subject=str(message.get("subject") or ""),
@@ -2746,6 +2886,7 @@ class MicrosoftGraphClient:
                 contentType=str(body.get("contentType") or "text"),
                 content=str(body.get("content") or ""),
             ),
+            bodyScope=returned_scope,
             webLink=self._nullable_string(message.get("webLink")),
             isDraft=bool(message.get("isDraft", False)),
             isRead=(
@@ -2770,6 +2911,13 @@ class MicrosoftGraphClient:
             internetMessageId=self._nullable_string(message.get("internetMessageId")),
             conversationId=self._nullable_string(message.get("conversationId")),
         )
+
+    @staticmethod
+    def _has_visible_text(body: dict[str, Any]) -> bool:
+        content = str(body.get("content") or "")
+        if str(body.get("contentType") or "").lower() == "html":
+            content = _HTML_TAG_RE.sub("", content).replace("&nbsp;", "")
+        return bool(content.strip())
 
     def _map_event(self, event: dict[str, Any]) -> CalendarEvent:
         body = event.get("body") or {}

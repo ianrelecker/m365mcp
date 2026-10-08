@@ -24,6 +24,9 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Message summaries include read state, attachment presence, importance, categories, flag status, Focused/Other inference classification, parent folder ID, sender, reply-to, internet message ID, and conversation ID.
 - `inferenceClassification` is a Microsoft Graph message property for Focused Inbox, not a separate app-registration permission.
 - Prefer `mail_check_inbox` or `mail_list` filters for quick triage. `mail_search` delegates to Microsoft Graph `$search`, which can be slower on large mailboxes.
+- `mail_get` returns a plain-text body containing only the part new to that message by default (Microsoft Graph `uniqueBody`), so a reply no longer drags its HTML, signature styling, and quoted thread along. `message.bodyScope` is `"new"` when that worked and `"full"` when Graph had no separate new part and the whole body came back instead.
+- Set `bodyScope="full"` for the whole body including quoted history (for example to see an earlier message the thread no longer holds), and `bodyFormat="html"` for the original HTML, which is needed to place `cid:` inline pictures or read formatting that matters.
+- Use `mail_get_messages` with a list of `messageIds` (up to 50) to read several messages in one call instead of calling `mail_get` repeatedly. Results keep input order, and an unreadable message carries `error` without failing the others.
 - Use `mail_mark_read` to mark mail read or unread.
 - Use `mail_set_flag` to set follow-up status.
 - Use category tools to set, add, remove, clear, or manage Outlook categories. `mail_update_category` can update a master category color, but Microsoft Graph does not support renaming an existing master category.
@@ -72,8 +75,10 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 ## Threads And Replies
 
-- Use `mail_get_thread` with either `messageId` or `conversationId` to inspect a conversation.
-- Thread messages are sorted locally by received time when available to avoid Microsoft Graph's inefficient filtered-sort query path.
+- Use `mail_get_thread` with either `messageId` or `conversationId` to inspect a conversation. It returns message summaries, including the user's own sent replies.
+- By default the thread comes back newest first, limited to the newest `top` messages (default 50). Use a small `top` such as 3 to catch up on the latest exchange, or `order="oldest"` to read from the start. `messageCount` is the thread size and `truncated` is true when messages were left out.
+- Thread messages are sorted locally by received time to avoid Microsoft Graph's inefficient filtered-sort query path, so the server reads the whole thread (up to 500 messages) before picking which to return.
+- To read the bodies of a thread, pass the summary IDs to `mail_get_messages`; the default new-part-only bodies avoid repeating the quoted history in every message.
 - Use `mail_create_reply_draft` to create reply or reply-all drafts in the thread.
 - Use `mail_send_draft` only after the draft looks correct. Use `mail_send_reply` only when immediate sending is explicit.
 

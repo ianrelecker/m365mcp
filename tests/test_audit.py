@@ -41,3 +41,13 @@ def test_audit_redacts_normalized_recipient_values() -> None:
         {"recipients": ["  ada@example.com  "]},
     )
     assert "ada@example.com" not in redacted
+
+
+def test_batch_mail_read_is_a_read_and_records_message_ids() -> None:
+    metadata = audit_metadata(
+        "mail_get_messages",
+        {"messageIds": ["m1", "m2"], "mailbox": None, "bodyScope": "new"},
+    )
+    assert metadata["category"] == "read"
+    assert metadata["mailbox"] == "me"
+    assert metadata["ids"] == {"messageIds": ["m1", "m2"]}

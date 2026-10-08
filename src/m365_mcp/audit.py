@@ -21,6 +21,7 @@ ID_FIELDS = {
     "folderPath",
     "itemId",
     "messageId",
+    "messageIds",
     "parentFolderId",
     "parentFolderPath",
     "permissionId",

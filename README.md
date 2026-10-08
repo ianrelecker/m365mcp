@@ -333,6 +333,7 @@ Mail and folders:
 - `mail_list`
 - `mail_search`
 - `mail_get`
+- `mail_get_messages`
 - `mail_list_drafts`
 - `mail_create_draft`
 - `mail_send`
@@ -436,7 +437,8 @@ Excel workbooks:
 ## Mail Notes
 
 - Prefer `mail_check_inbox` or `mail_list` filters for fast inbox triage. `mail_search` uses Microsoft Graph `$search`, which can be slower on large mailboxes.
-- `mail_get_thread` sorts returned thread messages locally by received time when available instead of asking Graph to sort a filtered conversation query.
+- `mail_get_thread` reads the whole conversation (up to 500 messages) and sorts it locally by received time instead of asking Graph to sort a filtered conversation query, then returns the newest `top` messages newest first (or the oldest first with `order="oldest"`).
+- `mail_get` and `mail_get_messages` return plain-text bodies holding only the part new to each message (Graph `uniqueBody`) by default, falling back to the full body when Graph has no separate new part; `bodyScope="full"` and `bodyFormat="html"` restore the full HTML body.
 - `mail_update_category` can update an Outlook master category color. Microsoft Graph does not support renaming an existing master category; create a new category and delete the old one only after confirming that is safe.
 
 ## SharePoint And Excel Notes

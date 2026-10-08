@@ -125,6 +125,193 @@ async def test_get_message_and_list_drafts() -> None:
 
 
 @pytest.mark.anyio
+async def test_get_message_returns_plain_text_new_part_by_default() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        message_id = request.url.path.rsplit("/", 1)[-1]
+        prefers_text = 'outlook.body-content-type="text"' in request.headers["prefer"]
+        unique = {
+            "msg-reply": "Sounds good, see you Tuesday.",
+            "msg-empty": "",
+        }[message_id]
+        return httpx.Response(
+            200,
+            json={
+                "id": message_id,
+                "subject": "Re: Tour",
+                "bodyPreview": "Sounds good",
+                "isDraft": False,
+                "body": {
+                    "contentType": "text" if prefers_text else "html",
+                    "content": "Sounds good, see you Tuesday.\n\nOn Monday Bob wrote: ...",
+                },
+                "uniqueBody": {
+                    "contentType": "text" if prefers_text else "html",
+                    "content": unique
+                    if prefers_text
+                    else f"<html><head><style>p {{}}</style></head><body>{unique}</body></html>",
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    reply = await graph.get_message(messageId="msg-reply")
+    assert reply.message.bodyScope == "new"
+    assert reply.message.body.contentType == "text"
+    assert reply.message.body.content == "Sounds good, see you Tuesday."
+    prefer = requests[-1].headers["prefer"]
+    assert 'IdType="ImmutableId"' in prefer
+    assert 'outlook.body-content-type="text"' in prefer
+    assert "uniqueBody" in requests[-1].url.params["$select"].split(",")
+
+    # An empty uniqueBody (here an HTML shell with only a style block) falls
+    # back to the full body rather than returning nothing.
+    empty = await graph.get_message(messageId="msg-empty", bodyFormat="html")
+    assert 'outlook.body-content-type="html"' in requests[-1].headers["prefer"]
+    assert empty.message.bodyScope == "full"
+    assert empty.message.body.content.startswith("Sounds good")
+
+    full = await graph.get_message(messageId="msg-reply", bodyScope="full")
+    assert "uniqueBody" not in requests[-1].url.params["$select"].split(",")
+    assert full.message.bodyScope == "full"
+    assert "Bob wrote" in full.message.body.content
+
+    with pytest.raises(ValueError, match="bodyFormat"):
+        await graph.get_message(messageId="msg-reply", bodyFormat="markdown")
+    with pytest.raises(ValueError, match="bodyScope"):
+        await graph.get_message(messageId="msg-reply", bodyScope="quoted")
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_get_messages_batches_reads_and_keeps_order() -> None:
+    batches: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1.0/$batch"
+        payload = json.loads(request.content)
+        batches.append(payload)
+        responses = []
+        for inner in payload["requests"]:
+            assert inner["method"] == "GET"
+            assert inner["url"].startswith("/users/shared%40example.com/messages/")
+            assert "uniqueBody" in inner["url"]
+            assert 'outlook.body-content-type="text"' in inner["headers"]["Prefer"]
+            message_id = inner["url"].split("/messages/", 1)[1].split("?", 1)[0]
+            if message_id == "missing":
+                responses.append(
+                    {
+                        "id": inner["id"],
+                        "status": 404,
+                        "body": {
+                            "error": {
+                                "code": "ErrorItemNotFound",
+                                "message": "The specified object was not found.",
+                            }
+                        },
+                    }
+                )
+                continue
+            responses.append(
+                {
+                    "id": inner["id"],
+                    "status": 200,
+                    "body": {
+                        "id": message_id,
+                        "subject": f"Subject {message_id}",
+                        "bodyPreview": "",
+                        "isDraft": False,
+                        "body": {"contentType": "text", "content": "full"},
+                        "uniqueBody": {"contentType": "text", "content": f"new {message_id}"},
+                    },
+                }
+            )
+        # Graph does not promise responses in request order.
+        return httpx.Response(200, json={"responses": list(reversed(responses))})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    ids = [f"m{index}" for index in range(22)]
+    ids[5] = "missing"
+    result = await graph.get_messages(mailbox="shared@example.com", messageIds=ids)
+
+    assert [len(batch["requests"]) for batch in batches] == [20, 2]
+    assert result.mailbox == "shared@example.com"
+    assert [item.messageId for item in result.messages] == ids
+    assert result.messages[0].message.body.content == "new m0"
+    assert result.messages[0].message.bodyScope == "new"
+    assert result.messages[21].message.id == "m21"
+    assert result.messages[5].message is None
+    assert "404" in result.messages[5].error
+    assert "ErrorItemNotFound" in result.messages[5].error
+
+    with pytest.raises(ValueError, match="at most 50"):
+        await graph.get_messages(messageIds=[f"m{index}" for index in range(51)])
+    with pytest.raises(ValueError, match="at least one"):
+        await graph.get_messages(messageIds=[])
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_get_thread_reads_all_pages_and_returns_newest_first() -> None:
+    def message(index: int) -> dict[str, object]:
+        return {
+            "id": f"t{index}",
+            "subject": "Deal",
+            "bodyPreview": "",
+            "isDraft": False,
+            "conversationId": "conv-9",
+            "receivedDateTime": f"2026-05-{index + 1:02d}T12:00:00Z",
+        }
+
+    page_requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page_requests.append(str(request.url))
+        if "skiptoken" in str(request.url):
+            # Second page holds the oldest messages.
+            return httpx.Response(200, json={"value": [message(0), message(1)]})
+        assert request.url.params["$top"] == "100"
+        assert "$orderby" not in request.url.params
+        return httpx.Response(
+            200,
+            json={
+                "value": [message(3), message(2), message(4)],
+                "@odata.nextLink": (
+                    "https://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc"
+                ),
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    latest = await graph.get_thread(conversationId="conv-9", top=2)
+    assert len(page_requests) == 2
+    assert [item.id for item in latest.messages] == ["t4", "t3"]
+    assert latest.order == "newest"
+    assert latest.messageCount == 5
+    assert latest.truncated is True
+
+    earliest = await graph.get_thread(conversationId="conv-9", top=10, order="oldest")
+    assert [item.id for item in earliest.messages] == ["t0", "t1", "t2", "t3", "t4"]
+    assert earliest.truncated is False
+
+    with pytest.raises(ValueError, match="order"):
+        await graph.get_thread(conversationId="conv-9", order="latest")
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_create_send_and_move_message() -> None:
     requests: list[tuple[str, str, dict[str, object] | None]] = []
 
@@ -766,9 +953,10 @@ async def test_attachments_threads_and_categories() -> None:
     assert binary.unsupportedReason is not None
 
     thread = await graph.get_thread(conversationId="conv-1")
-    assert thread.messages[0].id == "msg-1"
+    assert thread.order == "newest"
+    assert [message.id for message in thread.messages] == ["msg-2", "msg-1"]
 
-    thread_by_message = await graph.get_thread(messageId="msg-1")
+    thread_by_message = await graph.get_thread(messageId="msg-1", order="oldest")
     assert thread_by_message.conversationId == "conv-1"
     assert [message.id for message in thread_by_message.messages] == ["msg-1", "msg-2"]
 

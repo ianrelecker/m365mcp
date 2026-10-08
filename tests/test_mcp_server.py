@@ -137,6 +137,7 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "mail_list",
             "mail_search",
             "mail_get",
+            "mail_get_messages",
             "mail_list_drafts",
             "mail_create_draft",
             "mail_send",

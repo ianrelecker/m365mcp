@@ -72,6 +72,9 @@ class FullMessage(AppModel):
     sentDateTime: str | None = None
     bodyPreview: str
     body: MessageBody
+    # "new" when body holds only this message's own text (Graph uniqueBody),
+    # "full" when it holds the whole body including quoted history.
+    bodyScope: Literal["new", "full"] = "full"
     webLink: str | None = None
     isDraft: bool
     isRead: bool | None = None
@@ -145,6 +148,21 @@ class MailSearchResult(AppModel):
 class MailGetResult(AppModel):
     mailbox: str
     message: FullMessage
+
+
+class MailGetMessagesItem(AppModel):
+    """One message inside a batch read. ``error`` is set (and ``message`` is
+    None) when that message could not be read; the rest of the batch is
+    unaffected."""
+
+    messageId: str
+    message: FullMessage | None = None
+    error: str | None = None
+
+
+class MailGetMessagesResult(AppModel):
+    mailbox: str
+    messages: list[MailGetMessagesItem]
 
 
 class MailListDraftsResult(AppModel):
@@ -291,6 +309,9 @@ class MailAttachmentPdfResult(AppModel):
 class MailThreadResult(AppModel):
     mailbox: str
     conversationId: str
+    order: Literal["newest", "oldest"] = "oldest"
+    messageCount: int | None = None
+    truncated: bool = False
     messages: list[MessageSummary]
 
 
