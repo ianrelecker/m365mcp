@@ -8,6 +8,15 @@ def test_sharing_mutations_are_audited_as_writes() -> None:
     assert classify_tool("sharepoint_revoke_permission") == "write"
 
 
+def test_sharepoint_file_reads_are_audited_as_reads() -> None:
+    assert classify_tool("sharepoint_get_file_content") == "read"
+    metadata = audit_metadata(
+        "sharepoint_get_file_content", {"driveId": "drive-1", "itemId": "item-1"}
+    )
+    assert metadata["ids"] == {"driveId": "drive-1", "itemId": "item-1"}
+    assert "mailbox" not in metadata
+
+
 def test_sharing_audit_keeps_ids_and_redacts_sensitive_values() -> None:
     arguments = {
         "driveId": "drive-1",

@@ -182,6 +182,7 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "sharepoint_list_children",
             "sharepoint_search_in_drive",
             "sharepoint_get_item_by_url",
+            "sharepoint_get_file_content",
             "sharepoint_list_permissions",
             "sharepoint_create_link",
             "sharepoint_grant_access",
@@ -344,6 +345,51 @@ async def test_sharepoint_mutations_require_confirmation(config_factory) -> None
     assert create.isError is True
     assert grant.isError is True
     assert revoke.isError is True
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_sharepoint_get_file_content_returns_structured_text(config_factory) -> None:
+    class TokenAuthService(StubAuthService):
+        async def get_access_token(self) -> str:
+            return "access-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "graph.microsoft.com":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "item-1",
+                    "name": "notes.md",
+                    "file": {},
+                    "size": 8,
+                    "@microsoft.graph.downloadUrl": "https://files.example/dl",
+                },
+            )
+        return httpx.Response(200, content=b"# Notes\n")
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    runtime = RuntimeServices(
+        config=config_factory(localBaseUrl="http://localhost:8787"),
+        microsoft_auth=StubAuthService(),
+        graph=StubGraphClient(),
+        sharepoint=SharePointFilesClient(TokenAuthService(), http_client),
+        excel=ExcelWorkbookClient(TokenAuthService(), http_client),
+        http_client=http_client,
+        owns_http_client=False,
+        start_helper_server=False,
+    )
+    server = create_mcp_server(runtime)
+
+    async with create_connected_server_and_client_session(server, raise_exceptions=True) as session:
+        result = await session.call_tool(
+            "sharepoint_get_file_content", {"driveId": "drive-1", "itemId": "item-1"}
+        )
+
+    assert result.isError is False
+    assert result.structuredContent["content"] == "# Notes\n"
+    assert result.structuredContent["encoding"] == "utf-8"
+    assert result.structuredContent["item"]["name"] == "notes.md"
     await http_client.aclose()
 
 

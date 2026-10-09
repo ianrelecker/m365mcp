@@ -18,6 +18,7 @@ Claude can:
 - Search, create, update, and delete contacts.
 - List, create, update, and delete calendar events.
 - Browse SharePoint sites, document libraries, and folders, and find files anywhere you have access.
+- Read Word (.docx), PDF, and text/Markdown files stored in SharePoint/OneDrive; Word documents come back as Markdown with headings, lists, and tables.
 - Edit Excel workbooks stored in SharePoint/OneDrive in place: read and write cell ranges and append table rows.
 
 Claude can also read [M365_MCP_CAPABILITIES.md](M365_MCP_CAPABILITIES.md) through the `m365_capabilities` tool or the `m365://capabilities` MCP resource.
@@ -249,6 +250,7 @@ Once authenticated, ask Claude things like:
 - `Move this message to Inbox/Clients/Acme.`
 - `Create a rule that moves Acme invoices to that folder.`
 - `Read the PDF attachment on this email.`
+- `Summarize the investment memo Word doc in the Acme deal folder on SharePoint.`
 - `What's the total on the invoice attached to that email?`
 - `The contract attachment is a scan — what does page 3 say?`
 - `Show me the screenshot attached to that email.`
@@ -397,6 +399,7 @@ SharePoint and OneDrive files:
 - `sharepoint_list_children`
 - `sharepoint_search_in_drive`
 - `sharepoint_get_item_by_url`
+- `sharepoint_get_file_content`
 - `sharepoint_list_permissions`
 - `sharepoint_create_link`
 - `sharepoint_grant_access`
@@ -442,6 +445,7 @@ Excel workbooks:
 ## SharePoint And Excel Notes
 
 - Start with `sharepoint_search_items` to find a file or folder anywhere you have access, or walk `sharepoint_search_sites` -> `sharepoint_list_drives` -> `sharepoint_list_children`. You can also resolve a pasted Microsoft sharing URL with `sharepoint_get_item_by_url`. Each tool returns a `driveId` and `itemId` you can pass on.
+- `sharepoint_get_file_content` reads a Word (`.docx`, `.docm`, `.dotx`, `.dotm`), PDF, or text file by `driveId` + `itemId`. Word documents come back as Markdown; PDFs return their text layer, so a scanned PDF has nothing to read. Legacy `.doc` files are not supported.
 - Use `sharepoint_list_permissions` before changing access. `sharepoint_create_link` creates organization or anonymous view/edit links, `sharepoint_grant_access` gives named recipients read/write access, and `sharepoint_revoke_permission` removes a non-inherited direct grant or an entire sharing link. All three mutations require explicit confirmation. Invitation email is off by default.
 - The `workbook_*` tools edit `.xlsx` files **in place** through the Microsoft Graph Workbook API. Resolve the file once with `workbook_resolve`, then reuse its `driveId` + `itemId`. Edits are applied by Excel server-side, so formulas, formatting, and validation are preserved, and SharePoint versions every change.
 - `workbook_update_range` and `workbook_add_table_row` write directly to the stored file, so confirm the workbook, worksheet, and range before writing.

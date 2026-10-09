@@ -53,6 +53,9 @@ from m365_mcp.microsoft_graph import (
     MicrosoftGraphClient,
 )
 from m365_mcp.sharepoint_files import (
+    DEFAULT_FILE_MAX_BYTES,
+    DEFAULT_FILE_MAX_CHARS,
+    DriveItemContentResult,
     DriveItemInfo,
     DriveItemsResult,
     DrivesResult,
@@ -1692,6 +1695,31 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     ) -> DriveItemInfo:
         runtime = runtime_provider.get()
         return await runtime.sharepoint.get_item_by_share_url(shareUrl=shareUrl)
+
+    @mcp.tool(
+        name="sharepoint_get_file_content",
+        description=(
+            "Read a Word (.docx, .docm, .dotx, .dotm), PDF, or text (.md, .txt, "
+            ".csv, .json, ...) file from SharePoint or OneDrive by driveId and "
+            "itemId. Word comes back as Markdown (headings, lists, tables), PDF "
+            "as its text layer per page, and text files as-is. maxBytes is capped "
+            "at 50 MB and maxChars at 500,000. Excel files use the workbook "
+            "tools; other types return unsupportedReason. Nothing is saved to disk."
+        ),
+    )
+    async def sharepoint_get_file_content(
+        driveId: str,
+        itemId: str,
+        maxBytes: int = DEFAULT_FILE_MAX_BYTES,
+        maxChars: int = DEFAULT_FILE_MAX_CHARS,
+    ) -> DriveItemContentResult:
+        runtime = runtime_provider.get()
+        return await runtime.sharepoint.get_file_content(
+            driveId=driveId,
+            itemId=itemId,
+            maxBytes=maxBytes,
+            maxChars=maxChars,
+        )
 
     @mcp.tool(
         name="sharepoint_list_permissions",
