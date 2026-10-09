@@ -41,3 +41,23 @@ def test_audit_redacts_normalized_recipient_values() -> None:
         {"recipients": ["  ada@example.com  "]},
     )
     assert "ada@example.com" not in redacted
+
+
+def test_workbook_attachment_reads_are_audited_by_id_only() -> None:
+    assert classify_tool("mail_get_attachment_workbook") == "read"
+    metadata = audit_metadata(
+        "mail_get_attachment_workbook",
+        {
+            "messageId": "msg-1",
+            "attachmentId": "xl-1",
+            "mailbox": "shared@example.com",
+            "ranges": ["'Unit Mix'!A1:H40", "PurchasePrice"],
+            "includeFormulas": True,
+        },
+    )
+    assert metadata == {
+        "tool": "mail_get_attachment_workbook",
+        "category": "read",
+        "mailbox": "shared@example.com",
+        "ids": {"messageId": "msg-1", "attachmentId": "xl-1"},
+    }

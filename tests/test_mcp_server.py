@@ -147,6 +147,7 @@ async def test_mcp_server_exposes_expected_tools_and_structured_outputs(config_f
             "mail_get_attachment_image",
             "mail_get_inline_images",
             "mail_get_attachment_pdf_pages",
+            "mail_get_attachment_workbook",
             "mail_get_thread",
             "mail_create_reply_draft",
             "mail_send_reply",

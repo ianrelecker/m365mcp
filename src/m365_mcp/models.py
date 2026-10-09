@@ -288,6 +288,54 @@ class MailAttachmentPdfResult(AppModel):
     unsupportedReason: str | None = None
 
 
+class WorkbookSheetInfo(AppModel):
+    """One worksheet of a spreadsheet attachment. ``dimensions`` is the used
+    range (e.g. ``A1:M212``), or ``None`` for an empty sheet."""
+
+    name: str
+    visibility: str = "visible"
+    dimensions: str | None = None
+    rowCount: int = 0
+    columnCount: int = 0
+
+
+class WorkbookDefinedNameInfo(AppModel):
+    name: str
+    value: str
+    scope: str | None = None
+
+
+class AttachmentRangeData(AppModel):
+    """One range read from a spreadsheet attachment. ``error`` is set (and the
+    data fields left empty) when that range could not be read; the other
+    ranges in the call are unaffected."""
+
+    worksheet: str
+    address: str
+    values: list[list[Any]] | None = None
+    formulas: list[list[Any]] | None = None
+    numberFormat: list[list[Any]] | None = None
+    rowCount: int | None = None
+    columnCount: int | None = None
+    truncated: bool = False
+    error: str | None = None
+
+
+class MailAttachmentWorkbookResult(AppModel):
+    mailbox: str
+    messageId: str
+    attachment: AttachmentInfo
+    sheets: list[WorkbookSheetInfo] = Field(default_factory=list)
+    # Usable names and template leftovers (#N/A, #REF!, print macros, ...)
+    # are counted with the layout; the names themselves are opt-in.
+    definedNameCount: int | None = None
+    definedNamesSkipped: int | None = None
+    definedNames: list[WorkbookDefinedNameInfo] = Field(default_factory=list)
+    ranges: list[AttachmentRangeData] = Field(default_factory=list)
+    truncated: bool = False
+    unsupportedReason: str | None = None
+
+
 class MailThreadResult(AppModel):
     mailbox: str
     conversationId: str

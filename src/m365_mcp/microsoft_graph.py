@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import functools
 import io
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
+import anyio
 import httpx
 
 try:  # pragma: no cover - exercised through dependency-aware tests
@@ -47,6 +49,7 @@ from .models import (
     MailAttachmentContentResult,
     MailAttachmentImageResult,
     MailAttachmentPdfResult,
+    MailAttachmentWorkbookResult,
     MailCategoryInfo,
     MailCategoryResult,
     MailCheckInboxResult,
@@ -78,6 +81,12 @@ from .models import (
     SkippedAttachment,
 )
 from .microsoft_auth import MicrosoftAuthService
+from . import workbook_reader
+from .workbook_reader import (
+    DEFAULT_WORKBOOK_MAX_BYTES,
+    DEFAULT_WORKBOOK_MAX_CELLS,
+    WorkbookReadError,
+)
 
 
 def _utc_now_iso() -> str:
@@ -195,6 +204,8 @@ DEFAULT_MAX_PDF_PAGES = 5
 # Source PDFs are downloaded, not viewed, so this is far larger than an image
 # cap; the page images it renders to are bounded separately.
 DEFAULT_PDF_MAX_BYTES = 25_000_000
+# Metadata only: contentBytes is left out so the download can be size-checked.
+WORKBOOK_ATTACHMENT_SELECT = "id,name,contentType,size,isInline,lastModifiedDateTime"
 SAFE_ATTACHMENT_EXTENSIONS = {
     ".csv",
     ".ics",
@@ -1043,6 +1054,115 @@ class MicrosoftGraphClient:
                 if not pages and page_count
                 else None
             ),
+        )
+
+    async def get_attachment_workbook(
+        self,
+        *,
+        mailbox: str | None = None,
+        messageId: str,
+        attachmentId: str,
+        ranges: list[str] | None = None,
+        sheet: str | None = None,
+        includeFormulas: bool = False,
+        includeNumberFormat: bool = False,
+        includeLayout: bool | None = None,
+        includeDefinedNames: bool = False,
+        maxCells: int = DEFAULT_WORKBOOK_MAX_CELLS,
+        maxBytes: int = DEFAULT_WORKBOOK_MAX_BYTES,
+    ) -> MailAttachmentWorkbookResult:
+        """Read cell values from an .xlsx/.xlsm attachment without saving it.
+
+        Values are the results Excel cached at the last save; nothing is
+        recalculated. With neither ``ranges`` nor ``sheet`` only the sheet list
+        and defined names are returned, which is the cheap way to learn the
+        layout before pulling cells. Once cells are requested the layout is
+        left out, since a large model's sheet and name lists can dwarf a small
+        read; ``includeLayout`` overrides that either way. The layout counts
+        defined names but lists them only with ``includeDefinedNames``, and
+        the list leaves out template leftovers (see
+        ``workbook_reader._is_useful_defined_name``). ``maxBytes`` and ``maxCells``
+        are clamped to the module ceilings.
+        """
+
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        maxBytes = workbook_reader.clamp_max_bytes(maxBytes)
+        maxCells = workbook_reader.clamp_max_cells(maxCells)
+        attachment_path = (
+            f"{base}/messages/{quote(messageId, safe='')}"
+            f"/attachments/{quote(attachmentId, safe='')}"
+        )
+        # Without $select Graph inlines the whole file as contentBytes, so the
+        # size could only be checked after the download it is meant to bound.
+        metadata = await self._request(
+            f"{attachment_path}?$select={WORKBOOK_ATTACHMENT_SELECT}"
+        )
+        attachment = self._map_attachment(metadata)
+
+        def unsupported(reason: str) -> MailAttachmentWorkbookResult:
+            return MailAttachmentWorkbookResult(
+                mailbox=normalized_mailbox or "me",
+                messageId=messageId,
+                attachment=attachment,
+                unsupportedReason=reason,
+            )
+
+        if attachment.attachmentType not in (None, "#microsoft.graph.fileAttachment"):
+            return unsupported(
+                "Only file attachments can be read as workbooks in this MCP server"
+            )
+        if self._is_legacy_spreadsheet_attachment(attachment):
+            return unsupported(
+                "Legacy .xls and binary .xlsb workbooks are not supported; ask "
+                "the sender for an .xlsx, or save it as .xlsx in Excel"
+            )
+        if not self._is_spreadsheet_attachment(attachment):
+            return unsupported("Attachment is not an .xlsx or .xlsm workbook")
+        reason = workbook_reader.unavailable_reason()
+        if reason is not None:
+            return unsupported(reason)
+        if attachment.size is not None and attachment.size > maxBytes:
+            return unsupported(f"Workbook size exceeds maxBytes={maxBytes}")
+
+        content_bytes = await self._request_bytes_limited(
+            f"{attachment_path}/$value", maxBytes=maxBytes
+        )
+        if content_bytes is None:
+            return unsupported(f"Workbook size exceeds maxBytes={maxBytes}")
+
+        try:
+            # Parsing is CPU-bound; keep it off the event loop.
+            read = await anyio.to_thread.run_sync(
+                functools.partial(
+                    workbook_reader.read_workbook,
+                    content_bytes,
+                    ranges=ranges,
+                    sheet=sheet,
+                    includeFormulas=includeFormulas,
+                    includeNumberFormat=includeNumberFormat,
+                    includeLayout=(
+                        includeLayout
+                        if includeLayout is not None
+                        else not (ranges or sheet)
+                    ),
+                    includeDefinedNames=includeDefinedNames,
+                    maxCells=maxCells,
+                )
+            )
+        except WorkbookReadError as error:
+            return unsupported(str(error))
+
+        return MailAttachmentWorkbookResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            attachment=attachment,
+            sheets=read.sheets,
+            definedNameCount=read.definedNameCount,
+            definedNamesSkipped=read.definedNamesSkipped,
+            definedNames=read.definedNames,
+            ranges=read.ranges,
+            truncated=read.truncated,
         )
 
     async def get_inline_images(
@@ -2100,31 +2220,66 @@ class MicrosoftGraphClient:
             response = await client.request(
                 "GET",
                 f"https://graph.microsoft.com/v1.0{path}",
-                headers={
-                    "Accept": "*/*",
-                    "Authorization": f"Bearer {access_token}",
-                    "Prefer": 'IdType="ImmutableId"',
-                },
+                headers=self._bytes_headers(access_token),
             )
 
         if not response.is_success:
-            detail = response.reason_phrase
-            if response.text:
-                try:
-                    data = response.json()
-                    if isinstance(data, dict):
-                        detail = (
-                            data.get("error", {}).get("message")
-                            or data.get("error_description")
-                            or detail
-                        )
-                except Exception:
-                    detail = response.text
-            raise RuntimeError(
-                f"Microsoft Graph request failed ({response.status_code}): {detail}"
-            )
+            raise self._bytes_request_error(response)
 
         return response.content
+
+    async def _request_bytes_limited(self, path: str, *, maxBytes: int) -> bytes | None:
+        """Stream a download, giving up once more than ``maxBytes`` arrive.
+
+        Returns ``None`` when the payload is too large, so an attachment whose
+        reported size was wrong still never fills memory.
+        """
+
+        access_token = await self._auth_service.get_access_token()
+        async with self._client() as client:
+            async with client.stream(
+                "GET",
+                f"https://graph.microsoft.com/v1.0{path}",
+                headers=self._bytes_headers(access_token),
+            ) as response:
+                if not response.is_success:
+                    await response.aread()
+                    raise self._bytes_request_error(response)
+                content_length = response.headers.get("Content-Length")
+                if content_length and content_length.isdigit() and int(content_length) > maxBytes:
+                    return None
+                buffer = bytearray()
+                async for chunk in response.aiter_bytes():
+                    buffer += chunk
+                    if len(buffer) > maxBytes:
+                        return None
+        return bytes(buffer)
+
+    @staticmethod
+    def _bytes_headers(access_token: str) -> dict[str, str]:
+        return {
+            "Accept": "*/*",
+            "Authorization": f"Bearer {access_token}",
+            "Prefer": 'IdType="ImmutableId"',
+        }
+
+    @staticmethod
+    def _bytes_request_error(response: httpx.Response) -> RuntimeError:
+        detail = response.reason_phrase
+        if response.text:
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    detail = (
+                        data.get("error", {}).get("message")
+                        or data.get("error_description")
+                        or detail
+                    )
+            except Exception:
+                detail = response.text
+        return RuntimeError(
+            f"Microsoft Graph request failed ({response.status_code}): {detail}"
+        )
 
     def _to_recipients(self, addresses: list[str] | None) -> list[dict[str, Any]] | None:
         cleaned = [address for address in (addresses or []) if address]
@@ -2364,6 +2519,11 @@ class MicrosoftGraphClient:
         is_safe_type = content_type.startswith("text/") or content_type in SAFE_ATTACHMENT_CONTENT_TYPES
         is_safe_extension = any(name.endswith(extension) for extension in SAFE_ATTACHMENT_EXTENSIONS)
         if not is_safe_type and not is_safe_extension:
+            if self._is_spreadsheet_attachment(attachment):
+                return (
+                    "Attachment is an Excel workbook; use "
+                    "mail_get_attachment_workbook to read its cells"
+                )
             if self._is_image_attachment(attachment):
                 return (
                     "Attachment is an image; use mail_get_attachment_image or "
@@ -2449,6 +2609,14 @@ class MicrosoftGraphClient:
         content_type = (attachment.contentType or "").split(";")[0].strip().lower()
         name = (attachment.name or "").lower()
         return content_type == "application/pdf" or name.endswith(".pdf")
+
+    def _is_spreadsheet_attachment(self, attachment: AttachmentInfo) -> bool:
+        return workbook_reader.is_spreadsheet(attachment.name, attachment.contentType)
+
+    def _is_legacy_spreadsheet_attachment(self, attachment: AttachmentInfo) -> bool:
+        return workbook_reader.is_legacy_spreadsheet(
+            attachment.name, attachment.contentType
+        )
 
     def _render_pdf_pages(
         self,

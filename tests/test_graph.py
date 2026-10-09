@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from m365_mcp import microsoft_graph as graph_module
+from m365_mcp import workbook_reader
 from m365_mcp.microsoft_graph import MicrosoftGraphClient
 
 
@@ -1572,4 +1573,650 @@ async def test_list_and_create_events_and_graph_errors() -> None:
     with pytest.raises(RuntimeError, match="ErrorItemNotFound: No such message"):
         await graph.get_message(messageId="bad-id")
 
+    await client.aclose()
+
+
+def _xlsx_bytes(
+    build,
+    *,
+    cached: dict[str, str] | None = None,
+    dimension: str | None = None,
+) -> bytes:
+    """Build an .xlsx with openpyxl, then patch the first sheet's XML.
+
+    openpyxl never calculates, so ``cached`` maps a formula's text to the value
+    Excel would have saved beside it; ``dimension`` overwrites the recorded
+    used range to mimic a writer that left it stale.
+    """
+
+    import io
+    import re
+    import zipfile
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    build(workbook)
+    raw = io.BytesIO()
+    workbook.save(raw)
+
+    patched = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(raw.getvalue())) as source, zipfile.ZipFile(
+        patched, "w", zipfile.ZIP_DEFLATED
+    ) as target:
+        for info in source.infolist():
+            data = source.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                xml = data.decode("utf-8")
+                for formula, value in (cached or {}).items():
+                    # openpyxl writes the empty cached value as <v /> or, when
+                    # lxml is installed, as <v></v>.
+                    xml = re.sub(
+                        rf"<f>{re.escape(formula)}</f><v(?: />|></v>)",
+                        f"<f>{formula}</f><v>{value}</v>",
+                        xml,
+                    )
+                if dimension is not None:
+                    xml = re.sub(r'<dimension ref="[^"]*" />', f'<dimension ref="{dimension}" />', xml)
+                data = xml.encode("utf-8")
+            target.writestr(info, data)
+    return patched.getvalue()
+
+
+def _build_deal_model(workbook) -> None:
+    from datetime import date
+
+    from openpyxl.workbook.defined_name import DefinedName
+
+    sheet = workbook.active
+    sheet.title = "Unit Mix"
+    sheet["B2"] = "Units"
+    sheet["C2"] = 120
+    sheet["B3"] = "Cap Rate"
+    sheet["C3"] = 0.055
+    sheet["C3"].number_format = "0.0%"
+    sheet["B4"] = "Doubled"
+    sheet["C4"] = "=C2*2"
+    sheet["B5"] = "Never calculated"
+    sheet["C5"] = "=C2*3"
+    sheet["B6"] = "Close"
+    sheet["C6"] = date(2026, 1, 31)
+
+    assumptions = workbook.create_sheet("Assumptions")
+    assumptions["A1"] = "Purchase Price"
+    assumptions["B1"] = 25_000_000
+
+    hidden = workbook.create_sheet("Calc")
+    hidden.sheet_state = "hidden"
+    hidden["A1"] = "secret"
+
+    workbook.defined_names["PurchasePrice"] = DefinedName(
+        "PurchasePrice", attr_text="Assumptions!$B$1"
+    )
+    workbook.defined_names["IRR"] = DefinedName(
+        "IRR", attr_text="'Unit Mix'!$C$3"
+    )
+    workbook.defined_names["Broken"] = DefinedName("Broken", attr_text="#REF!")
+
+
+def _workbook_graph(
+    payload: bytes,
+    *,
+    name: str = "model.xlsx",
+    content_type: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    odata_type: str = "#microsoft.graph.fileAttachment",
+    size: int | None = None,
+    downloads: list[int] | None = None,
+) -> tuple[httpx.AsyncClient, MicrosoftGraphClient]:
+    """Mock Graph: attachment metadata (``$select``, no contentBytes), then the
+    raw bytes from ``/$value``. ``downloads`` records each download's size."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments/xl-1"):
+            select = request.url.params.get("$select", "")
+            assert select and "contentBytes" not in select
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": odata_type,
+                    "id": "xl-1",
+                    "name": name,
+                    "contentType": content_type,
+                    "size": len(payload) if size is None else size,
+                },
+            )
+        if request.url.path.endswith("/messages/msg-1/attachments/xl-1/$value"):
+            if downloads is not None:
+                downloads.append(len(payload))
+            return httpx.Response(200, content=payload)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return client, MicrosoftGraphClient(StaticAuthService(), client)
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_outline_lists_sheets_and_names() -> None:
+    client, graph = _workbook_graph(_xlsx_bytes(_build_deal_model))
+
+    result = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+
+    assert result.unsupportedReason is None
+    assert result.ranges == []
+    assert [
+        (sheet.name, sheet.visibility, sheet.dimensions) for sheet in result.sheets
+    ] == [
+        ("Unit Mix", "visible", "B2:C6"),
+        ("Assumptions", "visible", "A1:B1"),
+        ("Calc", "hidden", "A1"),
+    ]
+    assert result.sheets[0].rowCount == 5
+    assert result.sheets[0].columnCount == 2
+    # The outline counts names but lists none; Broken points at deleted cells.
+    assert result.definedNames == []
+    assert result.definedNameCount == 2
+    assert result.definedNamesSkipped == 1
+
+    named = await graph.get_attachment_workbook(
+        messageId="msg-1", attachmentId="xl-1", includeDefinedNames=True
+    )
+    assert {(name.name, name.value) for name in named.definedNames} == {
+        ("PurchasePrice", "Assumptions!$B$1"),
+        ("IRR", "'Unit Mix'!$C$3"),
+    }
+    assert len(named.sheets) == 3
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_reads_ranges_names_and_formulas() -> None:
+    client, graph = _workbook_graph(
+        _xlsx_bytes(_build_deal_model, cached={"C2*2": "240"})
+    )
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=[
+            "'unit mix'!B2:C6",
+            "PurchasePrice",
+            "irr",
+            "Calc!A:A",
+            "Missing!A1",
+            "B2",
+        ],
+        includeFormulas=True,
+        includeNumberFormat=True,
+    )
+
+    unit_mix, price, irr, calc, missing, unqualified = result.ranges
+    assert result.truncated is False
+
+    assert unit_mix.worksheet == "Unit Mix"
+    assert unit_mix.address == "B2:C6"
+    assert (unit_mix.rowCount, unit_mix.columnCount) == (5, 2)
+    assert unit_mix.values == [
+        ["Units", 120],
+        ["Cap Rate", 0.055],
+        ["Doubled", 240],
+        # Excel never saved a result for this formula, so there is none to read.
+        ["Never calculated", None],
+        ["Close", "2026-01-31T00:00:00"],
+    ]
+    assert unit_mix.formulas[2] == ["Doubled", "=C2*2"]
+    assert unit_mix.formulas[3] == ["Never calculated", "=C2*3"]
+    assert unit_mix.numberFormat[1][1] == "0.0%"
+
+    assert (price.worksheet, price.address, price.values) == (
+        "Assumptions",
+        "B1",
+        [[25_000_000]],
+    )
+    # A bare "IRR" is a defined name, not column IRR.
+    assert (irr.worksheet, irr.address, irr.values) == ("Unit Mix", "C3", [[0.055]])
+    # Whole columns clamp to the used range, and hidden sheets are readable.
+    assert (calc.address, calc.values) == ("A1", [["secret"]])
+
+    assert missing.error == "Workbook has no sheet named 'Missing'"
+    assert missing.values is None
+    assert "qualify the address with a sheet name" in unqualified.error
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_sheet_mode_and_stale_dimension() -> None:
+    def build(workbook) -> None:
+        sheet = workbook.active
+        sheet.title = "Rent Roll"
+        for row in range(1, 6):
+            sheet.cell(row=row, column=1, value=f"Unit {row}")
+            sheet.cell(row=row, column=3, value=row * 1000)
+
+    # The writer claims only A1 is used; the real data runs to C5.
+    client, graph = _workbook_graph(_xlsx_bytes(build, dimension="A1"))
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        sheet="Rent Roll",
+        includeLayout=True,
+    )
+
+    assert result.sheets[0].dimensions == "A1:C5"
+    (whole,) = result.ranges
+    assert whole.address == "A1:C5"
+    assert whole.values[4] == ["Unit 5", None, 5000]
+    assert whole.formulas is None
+    assert whole.numberFormat is None
+
+    single = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=["C2:C3"],
+    )
+    # One sheet, so an unqualified address needs no sheet name.
+    assert single.ranges[0].values == [[2000], [3000]]
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_range_reads_skip_layout_unless_asked() -> None:
+    def build(workbook) -> None:
+        from openpyxl.workbook.defined_name import DefinedName
+
+        first = workbook.active
+        first.title = "Summary"
+        first["A1"] = "Price"
+        first["B1"] = 1000
+        for index in range(40):
+            extra = workbook.create_sheet(f"Tab {index}")
+            extra["A1"] = index
+            workbook.defined_names[f"Input{index}"] = DefinedName(
+                f"Input{index}", attr_text=f"'Tab {index}'!$A$1"
+            )
+
+    client, graph = _workbook_graph(_xlsx_bytes(build))
+
+    narrow = await graph.get_attachment_workbook(
+        messageId="msg-1", attachmentId="xl-1", ranges=["Summary!A1:B1"]
+    )
+    assert narrow.ranges[0].values == [["Price", 1000]]
+    assert narrow.sheets == []
+    assert narrow.definedNames == []
+    assert len(narrow.model_dump_json()) < 1500
+
+    by_sheet = await graph.get_attachment_workbook(
+        messageId="msg-1", attachmentId="xl-1", sheet="Summary"
+    )
+    assert by_sheet.ranges[0].values == [["Price", 1000]]
+    assert by_sheet.sheets == [] and by_sheet.definedNames == []
+
+    with_layout = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=["Summary!A1:B1"],
+        includeLayout=True,
+    )
+    assert len(with_layout.sheets) == 41
+    assert with_layout.definedNameCount == 40
+    assert with_layout.definedNames == []
+
+    # The discovery call (no ranges, no sheet) still returns the layout.
+    layout = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+    assert len(layout.sheets) == 41 and layout.ranges == []
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_names_drop_template_leftovers() -> None:
+    def build(workbook) -> None:
+        from openpyxl.workbook.defined_name import DefinedName
+
+        sheet = workbook.active
+        sheet.title = "Assump"
+        sheet["B2"] = 25_000_000
+        sheet["B3"] = 0.055
+        names = workbook.defined_names
+        names["PurchasePrice"] = DefinedName("PurchasePrice", attr_text="Assump!$B$2")
+        names["ExitCap"] = DefinedName("ExitCap", attr_text="Assump!$B$3")
+        names["TaxRate"] = DefinedName("TaxRate", attr_text="0.012")
+        # Leftovers broker templates carry by the hundred.
+        for index in range(300):
+            junk = "_" * 41 + f"a{index}"
+            names[junk] = DefinedName(
+                junk, attr_text='{"Assump",#N/A,TRUE,"Proforma";"Assump",#N/A,TRUE,"Proforma"}'
+            )
+        for index in range(150):
+            names[f"OldInput{index}"] = DefinedName(f"OldInput{index}", attr_text="#N/A")
+        names["Deleted"] = DefinedName("Deleted", attr_text="Assump!#REF!")
+        names["Linked"] = DefinedName("Linked", attr_text="[1]Proforma!$C$4")
+        names["RentColumn"] = DefinedName("RentColumn", attr_text="Rents[Rent]")
+        names["Hidden"] = DefinedName("Hidden", attr_text="Assump!$B$2", hidden=True)
+        names["wrn.Print_All."] = DefinedName(
+            "wrn.Print_All.", attr_text='{#N/A,#N/A,FALSE,"Proforma"}'
+        )
+        sheet.print_area = "A1:B3"
+
+    client, graph = _workbook_graph(_xlsx_bytes(build))
+
+    outline = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+    assert outline.definedNames == []
+    assert outline.definedNameCount == 4
+    # 300 + 150 leftovers plus Deleted, Linked, Hidden, and wrn.Print_All.;
+    # openpyxl lifts the print area onto the sheet, so it is never a name.
+    assert outline.definedNamesSkipped == 454
+    assert len(outline.model_dump_json()) < 1500
+
+    named = await graph.get_attachment_workbook(
+        messageId="msg-1", attachmentId="xl-1", includeDefinedNames=True
+    )
+    assert [name.name for name in named.definedNames] == [
+        "PurchasePrice",
+        "ExitCap",
+        "TaxRate",
+        "RentColumn",
+    ]
+    assert len(named.model_dump_json()) < 2000
+
+    # A name left off the list still resolves when asked for directly.
+    with_cells = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=["Hidden", "PurchasePrice"],
+        includeDefinedNames=True,
+    )
+    assert [r.values for r in with_cells.ranges] == [[[25_000_000]], [[25_000_000]]]
+    assert len(with_cells.definedNames) == 4
+    assert with_cells.sheets == []
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_cell_budget_truncates() -> None:
+    def build(workbook) -> None:
+        sheet = workbook.active
+        for row in range(1, 11):
+            for column in range(1, 4):
+                sheet.cell(row=row, column=column, value=row * column)
+
+    client, graph = _workbook_graph(_xlsx_bytes(build))
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=["A1:C10", "A1:B2"],
+        maxCells=10,
+    )
+
+    first, second = result.ranges
+    assert result.truncated is True
+    assert first.truncated is True
+    assert first.address == "A1:C3"
+    assert first.rowCount == 3
+    assert first.values[-1] == [3, 6, 9]
+    # One cell of budget is left, which cannot hold a single row of the range.
+    assert second.truncated is True
+    assert "maxCells=10" in second.error
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"name": "legacy.xls", "content_type": "application/vnd.ms-excel"}, "Legacy .xls"),
+        ({"name": "binary.xlsb", "content_type": "application/octet-stream"}, "Legacy .xls"),
+        ({"name": "notes.txt", "content_type": "text/plain"}, "not an .xlsx"),
+        ({"size": 50_000_000}, "maxBytes=10000000"),
+        (
+            {"odata_type": "#microsoft.graph.itemAttachment"},
+            "Only file attachments",
+        ),
+    ],
+)
+async def test_workbook_attachment_unsupported(overrides: dict, reason: str) -> None:
+    client, graph = _workbook_graph(_xlsx_bytes(_build_deal_model), **overrides)
+
+    result = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+
+    assert reason in result.unsupportedReason
+    assert result.sheets == []
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_rejects_non_zip_payload() -> None:
+    # A password-protected workbook is an OLE container, not a zip.
+    client, graph = _workbook_graph(b"\xd0\xcf\x11\xe0 not a zip", name="locked.xlsx")
+
+    result = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+
+    assert "password-protected" in result.unsupportedReason
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_without_openpyxl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workbook_reader, "openpyxl", None)
+    downloads: list[int] = []
+    client, graph = _workbook_graph(_xlsx_bytes(_build_deal_model), downloads=downloads)
+
+    result = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+
+    assert result.unsupportedReason == "Workbook reading requires the openpyxl package"
+    assert downloads == []
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_attachment_content_points_workbooks_to_workbook_tool() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "xl-1",
+                "name": "model.xlsx",
+                "contentType": "application/octet-stream",
+                "size": 10,
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    result = await graph.get_attachment_content(messageId="msg-1", attachmentId="xl-1")
+
+    assert result.content is None
+    assert "mail_get_attachment_workbook" in result.unsupportedReason
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_counts_uncalculated_formulas_in_used_range() -> None:
+    def build(workbook) -> None:
+        sheet = workbook.active
+        sheet["A1"] = "Heading"
+        sheet["A2"] = "=1+1"
+
+    # Excel never calculated A2, so it has no cached value.
+    client, graph = _workbook_graph(_xlsx_bytes(build))
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        sheet="Sheet",
+        includeFormulas=True,
+        includeLayout=True,
+    )
+
+    assert result.sheets[0].dimensions == "A1:A2"
+    (whole,) = result.ranges
+    assert whole.address == "A1:A2"
+    assert whole.values == [["Heading"], [None]]
+    assert whole.formulas == [["Heading"], ["=1+1"]]
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_isolates_unreadable_names() -> None:
+    def build(workbook) -> None:
+        from openpyxl.workbook.defined_name import DefinedName
+
+        sheet = workbook.active
+        sheet["A1"] = "Rent"
+        workbook.defined_names["RentColumn"] = DefinedName(
+            "RentColumn", attr_text="Rents[Rent]"
+        )
+        workbook.defined_names["TaxRate"] = DefinedName("TaxRate", attr_text="0.012")
+
+    client, graph = _workbook_graph(_xlsx_bytes(build))
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=["RentColumn", "A1", "TaxRate"],
+    )
+
+    assert result.unsupportedReason is None
+    structured, cell, constant = result.ranges
+    assert "Rents[Rent]" in structured.error
+    assert cell.values == [["Rent"]]
+    assert "not a single cell range" in constant.error
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_resolves_sheet_qualified_names() -> None:
+    def build(workbook) -> None:
+        from openpyxl.workbook.defined_name import DefinedName
+
+        _build_deal_model(workbook)
+        unit_mix = workbook["Unit Mix"]
+        unit_mix.defined_names["Units"] = DefinedName(
+            "Units", attr_text="'Unit Mix'!$C$2"
+        )
+
+    client, graph = _workbook_graph(_xlsx_bytes(build))
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=["'Unit Mix'!IRR", "'Unit Mix'!Units", "Assumptions!Units"],
+    )
+
+    irr, units, wrong_sheet = result.ranges
+    # Not column IRR: the workbook name IRR.
+    assert (irr.worksheet, irr.address, irr.values) == ("Unit Mix", "C3", [[0.055]])
+    assert (units.address, units.values) == ("C2", [[120]])
+    # A sheet-scoped name is only visible from its own sheet.
+    assert "not an A1 address or defined name" in wrong_sheet.error
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_pads_ranges_past_the_sheet_end() -> None:
+    def build(workbook) -> None:
+        sheet = workbook.active
+        for row in range(1, 4):
+            sheet.cell(row=row, column=1, value=row)
+
+    client, graph = _workbook_graph(_xlsx_bytes(build))
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1",
+        attachmentId="xl-1",
+        ranges=["A2:B5"],
+        includeFormulas=True,
+        includeNumberFormat=True,
+    )
+
+    (padded,) = result.ranges
+    assert (padded.address, padded.rowCount, padded.columnCount) == ("A2:B5", 4, 2)
+    assert padded.values == [[2, None], [3, None], [None, None], [None, None]]
+    assert len(padded.formulas) == 4 and len(padded.numberFormat) == 4
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_stops_download_past_max_bytes() -> None:
+    # Graph reports a small size, but the download is larger than maxBytes.
+    client, graph = _workbook_graph(b"x" * 5_000, size=100)
+
+    result = await graph.get_attachment_workbook(
+        messageId="msg-1", attachmentId="xl-1", maxBytes=1_000
+    )
+
+    assert result.unsupportedReason == "Workbook size exceeds maxBytes=1000"
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_clamps_limits() -> None:
+    client, graph = _workbook_graph(_xlsx_bytes(_build_deal_model), size=50_000_000)
+
+    oversized = await graph.get_attachment_workbook(
+        messageId="msg-1", attachmentId="xl-1", maxBytes=10**12
+    )
+    assert oversized.unsupportedReason == "Workbook size exceeds maxBytes=25000000"
+    await client.aclose()
+
+    client, graph = _workbook_graph(_xlsx_bytes(_build_deal_model))
+    starved = await graph.get_attachment_workbook(
+        messageId="msg-1", attachmentId="xl-1", ranges=["'Unit Mix'!B2:C2"], maxCells=0
+    )
+    assert "maxCells=1 is used up" in starved.ranges[0].error
+    await client.aclose()
+
+
+def _rezip(payload: bytes, replace: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(payload)) as source, zipfile.ZipFile(
+        out, "w", zipfile.ZIP_DEFLATED
+    ) as target:
+        for info in source.infolist():
+            target.writestr(info, replace.pop(info.filename, source.read(info.filename)))
+        for filename, data in replace.items():
+            target.writestr(filename, data)
+    return out.getvalue()
+
+
+@pytest.mark.anyio
+async def test_workbook_attachment_refuses_dtds_and_zip_bombs() -> None:
+    import io
+    import zipfile
+
+    base = _xlsx_bytes(_build_deal_model)
+    with zipfile.ZipFile(io.BytesIO(base)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml")
+    entity = b'<!DOCTYPE worksheet [<!ENTITY a "aaaaaaaa">]>' + sheet_xml
+
+    client, graph = _workbook_graph(_rezip(base, {"xl/worksheets/sheet1.xml": entity}))
+    result = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+    assert "document type declaration" in result.unsupportedReason
+    await client.aclose()
+
+    # 20 MB of zeros deflates to ~20 KB: far past any real workbook's ratio.
+    bomb = _rezip(base, {"xl/media/padding.bin": b"\0" * 20_000_000})
+    client, graph = _workbook_graph(bomb)
+    result = await graph.get_attachment_workbook(messageId="msg-1", attachmentId="xl-1")
+    assert "expands to more than" in result.unsupportedReason
     await client.aclose()

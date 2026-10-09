@@ -52,6 +52,10 @@ from m365_mcp.microsoft_graph import (
     DEFAULT_PDF_PAGE_LONG_EDGE,
     MicrosoftGraphClient,
 )
+from m365_mcp.workbook_reader import (
+    DEFAULT_WORKBOOK_MAX_BYTES,
+    DEFAULT_WORKBOOK_MAX_CELLS,
+)
 from m365_mcp.sharepoint_files import (
     DriveItemInfo,
     DriveItemsResult,
@@ -81,6 +85,7 @@ from m365_mcp.models import (
     MailAttachmentContentResult,
     MailAttachmentImageResult,
     MailAttachmentPdfResult,
+    MailAttachmentWorkbookResult,
     MailCategoryResult,
     MailCheckInboxResult,
     MailCreateDraftResult,
@@ -998,6 +1003,50 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             maxTotalBytes=maxTotalBytes,
         )
         return _image_content_blocks(result, "pages")
+
+    @mcp.tool(
+        name="mail_get_attachment_workbook",
+        description=(
+            "Read cells from an Excel (.xlsx/.xlsm) attachment without saving "
+            "it. Call with no ranges or sheet first to get the sheet list, used "
+            "ranges, and a count of defined names (includeDefinedNames=true "
+            "lists the usable ones); then pull only the cells needed with "
+            "ranges like [\"'Unit Mix'!A1:H40\", \"PurchasePrice\"]. Cell reads "
+            "leave the sheet list out unless includeLayout=true. Values are "
+            "what Excel saved with the file — nothing is "
+            "recalculated, so a formula never calculated in Excel reads as "
+            "null. One call returns at most maxCells cells (capped at 50,000); "
+            "truncated: true means request the rest in another call. "
+            "Attachments over maxBytes (capped at 25 MB) are refused."
+        ),
+    )
+    async def mail_get_attachment_workbook(
+        messageId: str,
+        attachmentId: str,
+        mailbox: str | None = None,
+        ranges: list[str] | None = None,
+        sheet: str | None = None,
+        includeFormulas: bool = False,
+        includeNumberFormat: bool = False,
+        includeLayout: bool | None = None,
+        includeDefinedNames: bool = False,
+        maxCells: int = DEFAULT_WORKBOOK_MAX_CELLS,
+        maxBytes: int = DEFAULT_WORKBOOK_MAX_BYTES,
+    ) -> MailAttachmentWorkbookResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.get_attachment_workbook(
+            mailbox=mailbox,
+            messageId=messageId,
+            attachmentId=attachmentId,
+            ranges=ranges,
+            sheet=sheet,
+            includeFormulas=includeFormulas,
+            includeNumberFormat=includeNumberFormat,
+            includeLayout=includeLayout,
+            includeDefinedNames=includeDefinedNames,
+            maxCells=maxCells,
+            maxBytes=maxBytes,
+        )
 
     @mcp.tool(
         name="mail_get_thread",
