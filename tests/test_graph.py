@@ -81,6 +81,77 @@ async def test_list_messages_and_search_messages() -> None:
 
 
 @pytest.mark.anyio
+async def test_list_messages_filters_by_date_sorts_and_pages() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        skip = int(request.url.params.get("$skip", "0"))
+        body: dict[str, object] = {
+            "value": [
+                {"id": f"m{skip + index}", "subject": "", "bodyPreview": "", "isDraft": False}
+                for index in range(2)
+            ]
+        }
+        if skip == 0:
+            body["@odata.nextLink"] = (
+                "https://graph.microsoft.com/v1.0/me/mailFolders('Inbox')/messages?$skip=2"
+            )
+        return httpx.Response(200, json=body)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    first = await graph.list_messages(
+        top=2,
+        inferenceClassification="focused",
+        receivedAfter="2026-10-01",
+        receivedBefore="2026-10-07T09:00:00-05:00",
+    )
+    params = requests[-1].url.params
+    # The sorted property leads the filter, as Graph requires for $orderby.
+    assert params["$filter"] == (
+        "receivedDateTime ge 2026-10-01T00:00:00Z and "
+        "receivedDateTime lt 2026-10-07T14:00:00Z and "
+        "inferenceClassification eq 'focused'"
+    )
+    assert params["$orderby"] == "receivedDateTime desc"
+    assert "$skip" not in params
+    assert first.receivedAfter == "2026-10-01T00:00:00Z"
+    assert first.receivedBefore == "2026-10-07T14:00:00Z"
+    assert first.hasMore is True
+    assert first.nextSkip == 2
+
+    second = await graph.list_messages(top=2, order="oldest", skip=first.nextSkip)
+    params = requests[-1].url.params
+    assert params["$orderby"] == "receivedDateTime asc"
+    assert params["$skip"] == "2"
+    # No filters at all: plain $orderby needs no date bound.
+    assert "$filter" not in params
+    assert [message.id for message in second.messages] == ["m2", "m3"]
+    assert second.order == "oldest"
+    assert second.hasMore is False
+    assert second.nextSkip is None
+
+    await graph.list_messages(receivedBefore="2026-10-07Z")
+    assert requests[-1].url.params["$filter"] == (
+        "receivedDateTime ge 1900-01-01T00:00:00Z and "
+        "receivedDateTime lt 2026-10-07T00:00:00Z"
+    )
+
+    with pytest.raises(ValueError, match="receivedAfter must be an ISO 8601"):
+        await graph.list_messages(receivedAfter="last week")
+    with pytest.raises(ValueError, match="earlier than"):
+        await graph.list_messages(receivedAfter="2026-10-07", receivedBefore="2026-10-01")
+    with pytest.raises(ValueError, match="order"):
+        await graph.list_messages(order="latest")
+    with pytest.raises(ValueError, match="skip"):
+        await graph.list_messages(skip=-1)
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_get_message_and_list_drafts() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/messages/msg-123"):
@@ -358,7 +429,9 @@ async def test_folder_navigation_inbox_filters_and_nested_move() -> None:
 
         if request.url.path.endswith("/mailFolders/acme-id/messages") and request.method == "GET":
             assert "inferenceClassification" in request.url.params["$select"]
+            assert request.url.params["$orderby"] == "receivedDateTime desc"
             assert request.url.params["$filter"] == (
+                "receivedDateTime ge 1900-01-01T00:00:00Z and "
                 "isRead eq false and hasAttachments eq true and "
                 "importance eq 'high' and categories/any(c:c eq 'Client') and "
                 "flag/flagStatus eq 'flagged' and "

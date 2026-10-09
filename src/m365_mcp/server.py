@@ -439,8 +439,14 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
     @mcp.tool(
         name="mail_list",
         description=(
-            "List messages from a mailbox folder. Use mailbox for shared/delegated "
-            "mailboxes the signed-in Microsoft user can access."
+            "List messages from a mailbox folder, newest first by default "
+            '(order="oldest" reverses). receivedAfter (inclusive) and '
+            "receivedBefore (exclusive) take ISO 8601 dates or date-times, read "
+            "as UTC unless an offset is given, and combine with the other "
+            "filters, including inferenceClassification for Focused/Other. "
+            "When hasMore is true, call again with skip=nextSkip for the next "
+            "page. Use mailbox for shared/delegated mailboxes the signed-in "
+            "Microsoft user can access."
         ),
     )
     async def mail_list(
@@ -455,6 +461,10 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
         categories: list[str] | None = None,
         flagStatus: Literal["notFlagged", "flagged", "complete"] | None = None,
         inferenceClassification: Literal["focused", "other"] | None = None,
+        receivedAfter: str | None = None,
+        receivedBefore: str | None = None,
+        order: Literal["newest", "oldest"] = "newest",
+        skip: int = 0,
     ) -> MailListResult:
         runtime = runtime_provider.get()
         return await runtime.graph.list_messages(
@@ -469,6 +479,10 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             categories=categories,
             flagStatus=flagStatus,
             inferenceClassification=inferenceClassification,
+            receivedAfter=receivedAfter,
+            receivedBefore=receivedBefore,
+            order=order,
+            skip=skip,
         )
 
     @mcp.tool(

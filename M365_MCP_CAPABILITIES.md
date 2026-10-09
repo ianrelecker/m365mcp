@@ -23,6 +23,9 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 - Message summaries include read state, attachment presence, importance, categories, flag status, Focused/Other inference classification, parent folder ID, sender, reply-to, internet message ID, and conversation ID.
 - `inferenceClassification` is a Microsoft Graph message property for Focused Inbox, not a separate app-registration permission.
+- `mail_list` returns the newest messages first. Use `order="oldest"` to start from the oldest.
+- Narrow `mail_list` by date with `receivedAfter` (inclusive) and `receivedBefore` (exclusive). Both take an ISO 8601 date such as `2026-10-01` or a date-time such as `2026-10-01T09:00:00-05:00`. A value without an offset is read as UTC, so give the user's offset when the exact day boundary matters. Date filters combine with every other filter, including `inferenceClassification`, so "Focused mail from last week" is one call.
+- `mail_list` pages with `skip`. When a result has `hasMore: true`, call again with the same arguments and `skip` set to `nextSkip`. Mail that arrives between calls can shift a newest-first page by a message or two, so fix `receivedBefore` when paging through a busy folder.
 - Prefer `mail_check_inbox` or `mail_list` filters for quick triage. `mail_search` delegates to Microsoft Graph `$search`, which can be slower on large mailboxes.
 - Use `mail_mark_read` to mark mail read or unread.
 - Use `mail_set_flag` to set follow-up status.

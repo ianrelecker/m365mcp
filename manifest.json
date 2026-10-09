@@ -124,7 +124,7 @@
     },
     {
       "name": "mail_list",
-      "description": "List messages from a mailbox folder. Use mailbox for shared/delegated mailboxes the signed-in Microsoft user can access."
+      "description": "List messages from a mailbox folder, newest first by default (order=\"oldest\" reverses). receivedAfter (inclusive) and receivedBefore (exclusive) take ISO 8601 dates or date-times, read as UTC unless\u2026"
     },
     {
       "name": "mail_check_inbox",

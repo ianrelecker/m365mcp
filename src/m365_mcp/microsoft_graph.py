@@ -242,7 +242,19 @@ class MicrosoftGraphClient:
         categories: list[str] | None = None,
         flagStatus: str | None = None,
         inferenceClassification: str | None = None,
+        receivedAfter: str | None = None,
+        receivedBefore: str | None = None,
+        order: str = "newest",
+        skip: int = 0,
     ) -> MailListResult:
+        if order not in ("newest", "oldest"):
+            raise ValueError('order must be "newest" or "oldest"')
+        if skip < 0:
+            raise ValueError("skip must be 0 or greater")
+        received_after = self._graph_datetime(receivedAfter, "receivedAfter")
+        received_before = self._graph_datetime(receivedBefore, "receivedBefore")
+        if received_after and received_before and received_after >= received_before:
+            raise ValueError("receivedAfter must be earlier than receivedBefore")
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         resolved_folder_id = folderId
@@ -264,23 +276,45 @@ class MicrosoftGraphClient:
             flagStatus=flagStatus,
             inferenceClassification=inferenceClassification,
         )
+        # Graph rejects $orderby with $filter ("InefficientFilter") unless the
+        # sorted property is also filtered, and filtered first. A no-op lower
+        # bound keeps the sort working alongside the other filters.
+        date_filters: list[str] = []
+        if received_after:
+            date_filters.append(f"receivedDateTime ge {received_after}")
+        elif filters or received_before:
+            date_filters.append("receivedDateTime ge 1900-01-01T00:00:00Z")
+        if received_before:
+            date_filters.append(f"receivedDateTime lt {received_before}")
+        filters = date_filters + filters
         params: dict[str, str] = {
             "$top": str(min(top, 100)),
             "$select": MESSAGE_SUMMARY_SELECT,
+            "$orderby": f"receivedDateTime {'desc' if order == 'newest' else 'asc'}",
         }
         if filters:
             params["$filter"] = " and ".join(filters)
+        if skip:
+            params["$skip"] = str(skip)
         query = httpx.QueryParams(params)
         result = await self._request(
             f"{self._mail_folder_messages_path(base, legacy_folder, resolved_folder_id)}?{query}"
         )
 
+        messages = [self._map_message_summary(message) for message in result["value"]]
+        has_more = bool(result.get("@odata.nextLink"))
         return MailListResult(
             mailbox=normalized_mailbox or "me",
             folder=folder,
             folderId=resolved_folder_id,
             folderPath=resolved_folder_path,
-            messages=[self._map_message_summary(message) for message in result["value"]],
+            order=order,
+            receivedAfter=received_after,
+            receivedBefore=received_before,
+            skip=skip,
+            hasMore=has_more,
+            nextSkip=skip + len(messages) if has_more else None,
+            messages=messages,
         )
 
     async def check_inbox(
@@ -2225,6 +2259,27 @@ class MicrosoftGraphClient:
                 f"'{self._escape_odata_string(inferenceClassification)}'"
             )
         return filters
+
+    @staticmethod
+    def _graph_datetime(value: str | None, name: str) -> str | None:
+        """Normalize an ISO 8601 date or date-time to a UTC OData literal.
+
+        A value without an offset (including a bare date) is read as UTC."""
+        text = (value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(
+                text[:-1] + "+00:00" if text[-1] in "Zz" else text
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"{name} must be an ISO 8601 date or date-time, such as "
+                f"2026-10-01 or 2026-10-01T09:00:00-05:00; got {value!r}"
+            ) from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _escape_odata_string(self, value: str) -> str:
         return value.replace("'", "''")

@@ -436,6 +436,7 @@ Excel workbooks:
 ## Mail Notes
 
 - Prefer `mail_check_inbox` or `mail_list` filters for fast inbox triage. `mail_search` uses Microsoft Graph `$search`, which can be slower on large mailboxes.
+- `mail_list` sorts by received time (`order`, newest first by default), filters by `receivedAfter`/`receivedBefore`, and pages with `skip`/`nextSkip`. Graph only allows `$orderby` together with `$filter` when the sorted property is filtered first, so the server always leads the filter with a `receivedDateTime` bound (a no-op lower bound when no date is given).
 - `mail_get_thread` sorts returned thread messages locally by received time when available instead of asking Graph to sort a filtered conversation query.
 - `mail_update_category` can update an Outlook master category color. Microsoft Graph does not support renaming an existing master category; create a new category and delete the old one only after confirming that is safe.
 

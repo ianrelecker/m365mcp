@@ -109,6 +109,13 @@ class MailListResult(AppModel):
     folder: str
     folderId: str | None = None
     folderPath: str | None = None
+    order: Literal["newest", "oldest"] = "newest"
+    receivedAfter: str | None = None
+    receivedBefore: str | None = None
+    skip: int = 0
+    hasMore: bool = False
+    # Pass as `skip` to read the next page; None when there is no next page.
+    nextSkip: int | None = None
     messages: list[MessageSummary]
 
 
