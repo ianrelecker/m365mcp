@@ -1368,7 +1368,13 @@ async def test_attachments_threads_and_categories() -> None:
                 },
             )
 
+        if request.url.path.endswith("/messages/msg-1/attachments/att-1/$value"):
+            return httpx.Response(200, content=base64.b64decode(text_payload))
+
         if request.url.path.endswith("/messages/msg-1/attachments/att-1"):
+            # Metadata only: contentBytes would download the file before the
+            # size check.
+            assert "contentBytes" not in request.url.params["$select"]
             return httpx.Response(
                 200,
                 json={
@@ -1377,7 +1383,6 @@ async def test_attachments_threads_and_categories() -> None:
                     "name": "notes.txt",
                     "contentType": "text/plain",
                     "size": 16,
-                    "contentBytes": text_payload,
                 },
             )
 
@@ -1607,7 +1612,11 @@ async def test_attachment_images_and_inline_pictures() -> None:
         if request.url.path.endswith("/messages/msg-1/attachments/inline-jpg/$value"):
             return httpx.Response(200, content=jpeg_bytes)
 
+        if request.url.path.endswith("/messages/msg-1/attachments/inline-png/$value"):
+            return httpx.Response(200, content=base64.b64decode(png_payload))
+
         if request.url.path.endswith("/messages/msg-1/attachments/inline-png"):
+            assert "contentBytes" not in request.url.params["$select"]
             return httpx.Response(
                 200,
                 json={
@@ -1618,7 +1627,6 @@ async def test_attachment_images_and_inline_pictures() -> None:
                     "size": 12,
                     "isInline": True,
                     "contentId": "logo@01D9",
-                    "contentBytes": png_payload,
                 },
             )
 
@@ -1719,7 +1727,11 @@ async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -
     pdf_payload = base64.b64encode(b"%PDF fake content").decode("ascii")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments/pdf-1/$value"):
+            return httpx.Response(200, content=base64.b64decode(pdf_payload))
+
         if request.url.path.endswith("/messages/msg-1/attachments/pdf-1"):
+            assert "contentBytes" not in request.url.params["$select"]
             return httpx.Response(
                 200,
                 json={
@@ -1728,7 +1740,6 @@ async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -
                     "name": "brief.pdf",
                     "contentType": "application/pdf",
                     "size": 128,
-                    "contentBytes": pdf_payload,
                 },
             )
 
@@ -1794,10 +1805,13 @@ def _single_page_pdf(text: bytes = b"INVOICE 12345", pages: int = 2) -> bytes:
 @pytest.mark.anyio
 async def test_pdf_attachment_page_rendering() -> None:
     pdf_bytes = _single_page_pdf(pages=3)
-    payload = base64.b64encode(pdf_bytes).decode("ascii")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments/pdf-1/$value"):
+            return httpx.Response(200, content=pdf_bytes)
+
         if request.url.path.endswith("/messages/msg-1/attachments/pdf-1"):
+            assert "contentBytes" not in request.url.params["$select"]
             return httpx.Response(
                 200,
                 json={
@@ -1806,7 +1820,6 @@ async def test_pdf_attachment_page_rendering() -> None:
                     "name": "invoice.pdf",
                     "contentType": "application/pdf",
                     "size": len(pdf_bytes),
-                    "contentBytes": payload,
                 },
             )
 
@@ -1890,6 +1903,8 @@ async def test_pdf_attachment_page_rendering() -> None:
 @pytest.mark.anyio
 async def test_pdf_page_rendering_reports_damaged_file() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$value"):
+            return httpx.Response(200, content=b"not a pdf")
         return httpx.Response(
             200,
             json={
@@ -1898,7 +1913,6 @@ async def test_pdf_page_rendering_reports_damaged_file() -> None:
                 "name": "broken.pdf",
                 "contentType": "application/pdf",
                 "size": 9,
-                "contentBytes": base64.b64encode(b"not a pdf").decode("ascii"),
             },
         )
 
@@ -3515,3 +3529,96 @@ def test_workbook_empty_address_is_an_error(request_text: str) -> None:
     assert data.values is None or data.values == []
     assert "names no cells" in (data.error or "")
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("name", "content_type", "read", "reason"),
+    [
+        ("notes.txt", "text/plain", "content", "Attachment content exceeds maxBytes=1000"),
+        ("brief.pdf", "application/pdf", "content", "Attachment content exceeds maxBytes=1000"),
+        ("chart.png", "image/png", "image", "Image content exceeds maxBytes=1000"),
+        ("deck.pdf", "application/pdf", "pages", "PDF size exceeds maxBytes=1000"),
+    ],
+)
+async def test_attachment_downloads_stop_at_max_bytes(
+    name: str, content_type: str, read: str, reason: str
+) -> None:
+    # Graph reports a tiny size, but the file is 50 chunks of 1,000 bytes.
+    metadata_selects: list[str] = []
+    chunks_sent: list[int] = []
+
+    class ChunkedFile(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(50):
+                chunks_sent.append(1_000)
+                yield b"x" * 1_000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments/att-1/$value"):
+            # No Content-Length, so only the running total can stop it.
+            return httpx.Response(
+                200, stream=ChunkedFile(), headers={"Transfer-Encoding": "chunked"}
+            )
+        if request.url.path.endswith("/messages/msg-1/attachments/att-1"):
+            metadata_selects.append(request.url.params.get("$select", ""))
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "att-1",
+                    "name": name,
+                    "contentType": content_type,
+                    "size": 10,
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+    call = {
+        "content": graph.get_attachment_content,
+        "image": graph.get_attachment_image,
+        "pages": graph.get_attachment_pdf_pages,
+    }[read]
+
+    result = await call(messageId="msg-1", attachmentId="att-1", maxBytes=1_000)
+
+    assert result.unsupportedReason == reason
+    # The download stops just past maxBytes instead of reading the whole file.
+    assert 0 < len(chunks_sent) <= 2
+    # The metadata request names its fields, so it never carries the file.
+    assert metadata_selects and metadata_selects[0]
+    assert "contentBytes" not in metadata_selects[0]
+    # contentId is selected through the fileAttachment cast, so inline images
+    # still match the body's cid: references.
+    assert "microsoft.graph.fileAttachment/contentId" in metadata_selects[0]
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_attachment_download_refuses_oversized_content_length() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/$value"):
+            return httpx.Response(200, content=b"x" * 5_000)
+        return httpx.Response(
+            200,
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "att-1",
+                "name": "notes.txt",
+                "contentType": "text/plain",
+                "size": 10,
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    result = await graph.get_attachment_content(
+        messageId="msg-1", attachmentId="att-1", maxBytes=1_000
+    )
+    assert result.unsupportedReason == "Attachment content exceeds maxBytes=1000"
+    assert result.truncated is True
+
+    await client.aclose()
