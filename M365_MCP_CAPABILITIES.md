@@ -53,7 +53,7 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 ## Attachments
 
 - Use `mail_list_attachments` before reading attachment content. Results include `contentId` and `isInline` so inline pictures can be told apart from real attachments.
-- `mail_get_attachment_content` returns content for small text-like files and extracts text from small PDFs.
+- `mail_get_attachment_content` returns content for small text-like files and extracts text from small PDFs. Text longer than `maxChars` comes back cut to that length with `truncated: true` and no `unsupportedReason`, so the partial text is usable as is.
 - Excel attachments are read with `mail_get_attachment_workbook` (see Excel Workbooks).
 - Large, binary, item, or reference attachments return metadata with `unsupportedReason`.
 - The server does not save attachments to disk.
