@@ -243,8 +243,15 @@ DEFAULT_MAX_PDF_PAGES = 5
 # Source PDFs are downloaded, not viewed, so this is far larger than an image
 # cap; the page images it renders to are bounded separately.
 DEFAULT_PDF_MAX_BYTES = 25_000_000
-# Metadata only: contentBytes is left out so the download can be size-checked.
-WORKBOOK_ATTACHMENT_SELECT = "id,name,contentType,size,isInline,lastModifiedDateTime"
+# Attachment metadata without contentBytes: without $select Graph inlines the
+# whole file as base64, so a size check would come after the download it is
+# meant to bound. The bytes are then streamed from /$value with a cutoff.
+# contentId lives on fileAttachment, not the base attachment type, so it needs
+# the type cast; a bare "contentId" is a 400.
+ATTACHMENT_METADATA_SELECT = (
+    "id,name,contentType,size,isInline,lastModifiedDateTime,"
+    "microsoft.graph.fileAttachment/contentId"
+)
 # Graph's attachment size counts the item's properties as well as the file,
 # so the up-front refusal allows this much over maxBytes; the streamed
 # download still stops at exactly maxBytes.
@@ -1024,8 +1031,12 @@ class MicrosoftGraphClient:
     ) -> MailAttachmentContentResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
+        attachment_path = (
+            f"{base}/messages/{quote(messageId, safe='')}"
+            f"/attachments/{quote(attachmentId, safe='')}"
+        )
         metadata = await self._request(
-            f"{base}/messages/{quote(messageId, safe='')}/attachments/{quote(attachmentId, safe='')}"
+            f"{attachment_path}?$select={ATTACHMENT_METADATA_SELECT}"
         )
         attachment = self._map_attachment(metadata)
         unsupported = self._attachment_unsupported_reason(
@@ -1040,13 +1051,10 @@ class MicrosoftGraphClient:
                 unsupportedReason=unsupported,
             )
 
-        content_bytes = await self._attachment_bytes(
-            base,
-            messageId=messageId,
-            attachment=metadata,
+        content_bytes = await self._request_bytes_limited(
+            f"{attachment_path}/$value", maxBytes=maxBytes
         )
-
-        if len(content_bytes) > maxBytes:
+        if content_bytes is None:
             return MailAttachmentContentResult(
                 mailbox=normalized_mailbox or "me",
                 messageId=messageId,
@@ -1100,8 +1108,12 @@ class MicrosoftGraphClient:
     ) -> MailAttachmentImageResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
+        attachment_path = (
+            f"{base}/messages/{quote(messageId, safe='')}"
+            f"/attachments/{quote(attachmentId, safe='')}"
+        )
         metadata = await self._request(
-            f"{base}/messages/{quote(messageId, safe='')}/attachments/{quote(attachmentId, safe='')}"
+            f"{attachment_path}?$select={ATTACHMENT_METADATA_SELECT}"
         )
         attachment = self._map_attachment(metadata)
         unsupported = self._attachment_image_unsupported_reason(
@@ -1116,12 +1128,10 @@ class MicrosoftGraphClient:
                 unsupportedReason=unsupported,
             )
 
-        content_bytes = await self._attachment_bytes(
-            base,
-            messageId=messageId,
-            attachment=metadata,
+        content_bytes = await self._request_bytes_limited(
+            f"{attachment_path}/$value", maxBytes=maxBytes
         )
-        if len(content_bytes) > maxBytes:
+        if content_bytes is None:
             return MailAttachmentImageResult(
                 mailbox=normalized_mailbox or "me",
                 messageId=messageId,
@@ -1150,8 +1160,12 @@ class MicrosoftGraphClient:
     ) -> MailAttachmentPdfResult:
         normalized_mailbox = self._normalize_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
+        attachment_path = (
+            f"{base}/messages/{quote(messageId, safe='')}"
+            f"/attachments/{quote(attachmentId, safe='')}"
+        )
         metadata = await self._request(
-            f"{base}/messages/{quote(messageId, safe='')}/attachments/{quote(attachmentId, safe='')}"
+            f"{attachment_path}?$select={ATTACHMENT_METADATA_SELECT}"
         )
         attachment = self._map_attachment(metadata)
 
@@ -1176,12 +1190,10 @@ class MicrosoftGraphClient:
         if attachment.size is not None and attachment.size > maxBytes:
             return unsupported(f"PDF size exceeds maxBytes={maxBytes}")
 
-        content_bytes = await self._attachment_bytes(
-            base,
-            messageId=messageId,
-            attachment=metadata,
+        content_bytes = await self._request_bytes_limited(
+            f"{attachment_path}/$value", maxBytes=maxBytes
         )
-        if len(content_bytes) > maxBytes:
+        if content_bytes is None:
             return unsupported(f"PDF size exceeds maxBytes={maxBytes}")
 
         try:
@@ -1251,10 +1263,8 @@ class MicrosoftGraphClient:
             f"{base}/messages/{quote(messageId, safe='')}"
             f"/attachments/{quote(attachmentId, safe='')}"
         )
-        # Without $select Graph inlines the whole file as contentBytes, so the
-        # size could only be checked after the download it is meant to bound.
         metadata = await self._request(
-            f"{attachment_path}?$select={WORKBOOK_ATTACHMENT_SELECT}"
+            f"{attachment_path}?$select={ATTACHMENT_METADATA_SELECT}"
         )
         attachment = self._map_attachment(metadata)
 
