@@ -363,6 +363,26 @@ class MailAttachmentWorkbookResult(AppModel):
     unsupportedReason: str | None = None
 
 
+class MailAttachmentCopyResult(AppModel):
+    mailbox: str
+    messageId: str
+    attachment: AttachmentInfo
+    driveId: str
+    # The new file; driveId + itemId go straight into the workbook_* tools.
+    itemId: str | None = None
+    fileName: str | None = None
+    requestedFileName: str | None = None
+    # True when the folder already held requestedFileName and Graph picked
+    # another name, so nothing was overwritten.
+    renamed: bool = False
+    webUrl: str | None = None
+    size: int | None = None
+    # .xlsm: the file can carry macros (they never run here or in Excel for
+    # the web, but would for anyone who opens it in desktop Excel).
+    macroEnabled: bool = False
+    unsupportedReason: str | None = None
+
+
 class MailThreadResult(AppModel):
     mailbox: str
     conversationId: str

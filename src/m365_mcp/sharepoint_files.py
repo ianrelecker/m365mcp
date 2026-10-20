@@ -29,6 +29,9 @@ Endpoint reference (Graph v1.0):
     Read a file:         GET    /drives/{driveId}/items/{itemId}
                                   ($select=...,@microsoft.graph.downloadUrl)
                          then GET the pre-authenticated download URL
+    Upload a new file:   PUT    /drives/{driveId}/items/{folderId}:/{name}:/content
+                         PUT    /drives/{driveId}/root:/{folderPath}/{name}:/content
+                                  (?@microsoft.graph.conflictBehavior=rename)
     List permissions:    GET    /drives/{driveId}/items/{itemId}/permissions
     Create link:         POST   /drives/{driveId}/items/{itemId}/createLink
     Grant access:        POST   /drives/{driveId}/items/{itemId}/invite
@@ -39,6 +42,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
@@ -62,6 +66,14 @@ DEFAULT_FILE_MAX_CHARS = 100_000
 MAX_FILE_MAX_BYTES = 50_000_000
 MAX_FILE_MAX_CHARS = 500_000
 _CONTENT_ENCODINGS = {"text": "utf-8", "word": "docx-markdown", "pdf": "pdf-text"}
+# A simple PUT upload takes files up to 250 MB; callers here are bounded far
+# below that (mail attachments stop at 25 MB), so no upload session is needed.
+MAX_SIMPLE_UPLOAD_BYTES = 250_000_000
+# SharePoint caps a full decoded path at 400 characters; a short name leaves
+# room for deep library folders.
+MAX_UPLOAD_NAME_CHARS = 128
+# Characters SharePoint and OneDrive refuse in a file name, plus control chars.
+_INVALID_NAME_CHARS = re.compile(r'[\x00-\x1f"*:<>?/\\|]')
 
 
 # --------------------------------------------------------------------------- #
@@ -563,6 +575,46 @@ class SharePointFilesClient:
             permissionId=permissionId,
         )
 
+    # ---- upload ------------------------------------------------------------ #
+    async def upload_new_file(
+        self,
+        *,
+        driveId: str,
+        fileName: str,
+        content: bytes,
+        contentType: str,
+        folderItemId: str | None = None,
+        folderPath: str | None = None,
+    ) -> DriveItemInfo:
+        """Create a new file in a folder, never replacing an existing one.
+
+        The folder is either ``folderItemId`` or ``folderPath`` (relative to
+        the drive root; empty means the root). A name clash is resolved by
+        Graph (``conflictBehavior=rename``, e.g. ``Model 1.xlsx``), so the
+        returned item's name can differ from ``fileName``. Callers pass a name
+        already made safe with :func:`safe_drive_item_name`.
+        """
+        if (folderItemId is None) == (folderPath is None):
+            raise ValueError("Pass exactly one of folderItemId or folderPath.")
+        if len(content) > MAX_SIMPLE_UPLOAD_BYTES:
+            raise ValueError(
+                f"File is larger than the {MAX_SIMPLE_UPLOAD_BYTES} byte upload limit."
+            )
+        name = quote(fileName, safe="")
+        if folderItemId is not None:
+            target = f"{self._item_path(driveId, folderItemId)}:/{name}:"
+        else:
+            folder = folderPath.strip("/")
+            prefix = f"{quote(folder)}/" if folder else ""
+            target = f"/drives/{quote(driveId, safe='')}/root:/{prefix}{name}:"
+        data = await self._request(
+            f"{target}/content?@microsoft.graph.conflictBehavior=rename",
+            method="PUT",
+            content=content,
+            content_type=contentType,
+        )
+        return self._map_item(data or {}, driveId)
+
     # ---- mapping / helpers ------------------------------------------------ #
     @staticmethod
     def _map_site(data: dict[str, Any]) -> SiteInfo:
@@ -696,6 +748,8 @@ class SharePointFilesClient:
         *,
         method: str = "GET",
         json_body: dict[str, Any] | None = None,
+        content: bytes | None = None,
+        content_type: str | None = None,
     ) -> Any:
         access_token = await self._auth_service.get_access_token()
         # No Prefer: IdType="ImmutableId" here. That header is an Outlook
@@ -708,11 +762,12 @@ class SharePointFilesClient:
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
             **({"Content-Type": "application/json"} if json_body is not None else {}),
+            **({"Content-Type": content_type} if content_type else {}),
         }
         url = path if path.startswith("https://") else f"{GRAPH_V1}{path}"
         async with self._client() as client:
             response = await client.request(
-                method, url, headers=headers, json=json_body
+                method, url, headers=headers, json=json_body, content=content
             )
         if response.status_code == 204:
             return None
@@ -792,3 +847,26 @@ def _require_https(url: str) -> str:
     if httpx.URL(url).scheme != "https":
         raise RuntimeError("Microsoft Graph Files download URL is not https; refusing it.")
     return url
+
+
+def safe_drive_item_name(name: str, *, extension: str) -> str:
+    """Turn an untrusted file name into one SharePoint accepts, ending in ``extension``.
+
+    Drops any directory part, replaces characters SharePoint refuses, strips
+    the leading/trailing spaces and dots and the ``~$`` lock-file prefix it
+    also refuses, and shortens the stem so the name fits
+    ``MAX_UPLOAD_NAME_CHARS``. The extension is always the one given, so a
+    caller cannot turn an ``.xlsm`` into an ``.xlsx`` or anything else.
+    """
+    base = re.split(r"[\\/]", name or "")[-1]
+    # Trim first, so "Model.xlsx " is not taken as a stem and given a
+    # second extension.
+    base = base.strip(" .")
+    if base.lower().endswith(extension.lower()):
+        base = base[: -len(extension)]
+    stem = _INVALID_NAME_CHARS.sub("_", base)
+    while stem.startswith("~$"):
+        stem = stem[2:]
+    stem = " ".join(stem.split()).strip(" .")
+    stem = stem[: MAX_UPLOAD_NAME_CHARS - len(extension)].rstrip(" .")
+    return f"{stem or 'attachment'}{extension}"

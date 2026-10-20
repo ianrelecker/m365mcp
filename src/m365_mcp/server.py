@@ -55,6 +55,7 @@ from m365_mcp.microsoft_graph import (
 from m365_mcp.workbook_reader import (
     DEFAULT_WORKBOOK_MAX_BYTES,
     DEFAULT_WORKBOOK_MAX_CELLS,
+    MAX_WORKBOOK_MAX_BYTES,
 )
 from m365_mcp.sharepoint_files import (
     DEFAULT_FILE_MAX_BYTES,
@@ -86,6 +87,7 @@ from m365_mcp.models import (
     ContactsSearchResult,
     M365CapabilitiesResult,
     MailAttachmentContentResult,
+    MailAttachmentCopyResult,
     MailAttachmentImageResult,
     MailAttachmentPdfResult,
     MailAttachmentWorkbookResult,
@@ -1122,6 +1124,47 @@ def _create_server(runtime_provider: _RuntimeProvider) -> FastMCP:
             includeLayout=includeLayout,
             includeDefinedNames=includeDefinedNames,
             maxCells=maxCells,
+            maxBytes=maxBytes,
+        )
+
+    @mcp.tool(
+        name="mail_copy_attachment_to_sharepoint",
+        description=(
+            "Copy an Excel (.xlsx/.xlsm) attachment into a SharePoint or "
+            "OneDrive folder so the workbook_* tools can recalculate, read, and "
+            "edit it. Give driveId plus either folderItemId or folderPath "
+            "(relative to the library root, e.g. \"Shared Active Deals/Email "
+            "Screening\"); sharepoint_get_item_by_url or sharepoint_list_children "
+            "finds them. Returns the new file's driveId and itemId for "
+            "workbook_create_session / workbook_calculate. Never overwrites: "
+            "if the name is taken, Graph picks a new one and renamed is true. "
+            "fileName is optional and keeps the attachment's extension. "
+            "Legacy .xls/.xlsb and templates are refused; read those with "
+            "mail_get_attachment_workbook where supported. Attachments over "
+            "maxBytes (capped at 25 MB) are refused. Nothing is saved locally; "
+            "the file shows up on disk only where OneDrive syncs that library."
+        ),
+    )
+    async def mail_copy_attachment_to_sharepoint(
+        messageId: str,
+        attachmentId: str,
+        driveId: str,
+        folderItemId: str | None = None,
+        folderPath: str | None = None,
+        fileName: str | None = None,
+        mailbox: str | None = None,
+        maxBytes: int = MAX_WORKBOOK_MAX_BYTES,
+    ) -> MailAttachmentCopyResult:
+        runtime = runtime_provider.get()
+        return await runtime.graph.copy_attachment_to_sharepoint(
+            files=runtime.sharepoint,
+            mailbox=mailbox,
+            messageId=messageId,
+            attachmentId=attachmentId,
+            driveId=driveId,
+            folderItemId=folderItemId,
+            folderPath=folderPath,
+            fileName=fileName,
             maxBytes=maxBytes,
         )
 
