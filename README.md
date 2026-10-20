@@ -13,6 +13,7 @@ Claude can:
 - View image attachments and the pictures embedded in a message body (PNG, JPEG, GIF, WEBP), so Claude sees the picture instead of just its file name.
 - Look at PDF attachments page by page — rendered to images, so invoices, tables, charts, signatures, and scanned documents are readable without OCR.
 - Read cells from Excel (.xlsx/.xlsm) attachments — sheet list, named ranges, values, and optionally formulas — without saving the file anywhere.
+- Copy an Excel attachment into a SharePoint or OneDrive folder so the workbook tools can recalculate and edit it (never overwrites an existing file).
 - Draft or send mail, reply in threads, move messages, and mark messages read/unread.
 - Create, rename, delete, and navigate mail folders and subfolders.
 - List, create, update, and delete Outlook Inbox rules.
@@ -358,6 +359,7 @@ Attachments, threads, categories, and rules:
 - `mail_get_inline_images`
 - `mail_get_attachment_pdf_pages`
 - `mail_get_attachment_workbook`
+- `mail_copy_attachment_to_sharepoint`
 - `mail_get_thread`
 - `mail_create_reply_draft`
 - `mail_send_reply`

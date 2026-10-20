@@ -8,7 +8,7 @@ import math
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import anyio
@@ -52,6 +52,7 @@ from .models import (
     MailAttachmentContentResult,
     MailAttachmentImageResult,
     MailAttachmentPdfResult,
+    MailAttachmentCopyResult,
     MailAttachmentWorkbookResult,
     MailCategoryInfo,
     MailCategoryResult,
@@ -86,12 +87,17 @@ from .models import (
     SkippedAttachment,
 )
 from .microsoft_auth import MicrosoftAuthService
+from .sharepoint_files import safe_drive_item_name
 from . import workbook_reader
 from .workbook_reader import (
     DEFAULT_WORKBOOK_MAX_BYTES,
     DEFAULT_WORKBOOK_MAX_CELLS,
+    MAX_WORKBOOK_MAX_BYTES,
     WorkbookReadError,
 )
+
+if TYPE_CHECKING:
+    from .sharepoint_files import SharePointFilesClient
 
 
 def _utc_now_iso() -> str:
@@ -256,6 +262,12 @@ ATTACHMENT_METADATA_SELECT = (
 # so the up-front refusal allows this much over maxBytes; the streamed
 # download still stops at exactly maxBytes.
 ATTACHMENT_SIZE_HEADROOM_BYTES = 64 * 1024
+# Workbooks the Graph Workbook API can open once they are a drive item.
+# Templates (.xltx/.xltm) and legacy .xls/.xlsb cannot be opened by it.
+UPLOADABLE_WORKBOOK_TYPES = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+}
 SAFE_ATTACHMENT_EXTENSIONS = {
     ".csv",
     ".ics",
@@ -1328,6 +1340,126 @@ class MicrosoftGraphClient:
             definedNames=read.definedNames,
             ranges=read.ranges,
             truncated=read.truncated,
+        )
+
+    async def copy_attachment_to_sharepoint(
+        self,
+        *,
+        files: SharePointFilesClient,
+        mailbox: str | None = None,
+        messageId: str,
+        attachmentId: str,
+        driveId: str,
+        folderItemId: str | None = None,
+        folderPath: str | None = None,
+        fileName: str | None = None,
+        maxBytes: int = MAX_WORKBOOK_MAX_BYTES,
+    ) -> MailAttachmentCopyResult:
+        """Copy an .xlsx/.xlsm attachment into a SharePoint or OneDrive folder.
+
+        The copy is an ordinary drive item, so the workbook_* tools can
+        calculate, read, and edit it straight away. Nothing is overwritten:
+        when the folder already holds the name, Graph picks a new one and
+        ``renamed`` is set. Nothing is saved on the local disk. The file
+        name is the attachment's (or ``fileName``) made safe for SharePoint,
+        and always keeps the attachment's extension.
+        """
+
+        if (folderItemId is None) == (folderPath is None):
+            raise ValueError("Pass exactly one of folderItemId or folderPath.")
+        normalized_mailbox = self._normalize_mailbox(mailbox)
+        base = self._base_path(normalized_mailbox)
+        maxBytes = workbook_reader.clamp_max_bytes(maxBytes)
+        attachment_path = (
+            f"{base}/messages/{quote(messageId, safe='')}"
+            f"/attachments/{quote(attachmentId, safe='')}"
+        )
+        metadata = await self._request(
+            f"{attachment_path}?$select={WORKBOOK_ATTACHMENT_SELECT}"
+        )
+        attachment = self._map_attachment(metadata)
+
+        def unsupported(reason: str) -> MailAttachmentCopyResult:
+            return MailAttachmentCopyResult(
+                mailbox=normalized_mailbox or "me",
+                messageId=messageId,
+                attachment=attachment,
+                driveId=driveId,
+                unsupportedReason=reason,
+            )
+
+        if attachment.attachmentType not in (None, "#microsoft.graph.fileAttachment"):
+            return unsupported(
+                "Only file attachments can be copied to SharePoint in this MCP server"
+            )
+        if self._is_legacy_spreadsheet_attachment(attachment):
+            return unsupported(
+                "Legacy .xls and binary .xlsb workbooks cannot be opened by the "
+                "workbook tools; ask the sender for an .xlsx, or save it as "
+                ".xlsx in Excel"
+            )
+        if not self._is_spreadsheet_attachment(attachment):
+            return unsupported("Attachment is not an .xlsx or .xlsm workbook")
+        extension = self._uploadable_workbook_extension(attachment)
+        if extension is None:
+            return unsupported(
+                "Excel templates (.xltx/.xltm) cannot be opened by the workbook "
+                "tools; use mail_get_attachment_workbook to read one"
+            )
+        if fileName is not None:
+            lowered = fileName.strip().lower()
+            other = next(
+                (
+                    suffix
+                    for suffix in (
+                        *workbook_reader.SPREADSHEET_EXTENSIONS,
+                        *workbook_reader.LEGACY_SPREADSHEET_EXTENSIONS,
+                    )
+                    if lowered.endswith(suffix) and suffix != extension
+                ),
+                None,
+            )
+            if other is not None:
+                raise ValueError(
+                    f"fileName must keep the attachment's {extension} extension, "
+                    f"not {other}"
+                )
+        requested = safe_drive_item_name(
+            fileName if fileName is not None else attachment.name or "",
+            extension=extension,
+        )
+        if (
+            attachment.size is not None
+            and attachment.size > maxBytes + ATTACHMENT_SIZE_HEADROOM_BYTES
+        ):
+            return unsupported(f"Workbook size exceeds maxBytes={maxBytes}")
+
+        content_bytes = await self._request_bytes_limited(
+            f"{attachment_path}/$value", maxBytes=maxBytes
+        )
+        if content_bytes is None:
+            return unsupported(f"Workbook size exceeds maxBytes={maxBytes}")
+
+        item = await files.upload_new_file(
+            driveId=driveId,
+            folderItemId=folderItemId,
+            folderPath=folderPath,
+            fileName=requested,
+            content=content_bytes,
+            contentType=UPLOADABLE_WORKBOOK_TYPES[extension],
+        )
+        return MailAttachmentCopyResult(
+            mailbox=normalized_mailbox or "me",
+            messageId=messageId,
+            attachment=attachment,
+            driveId=item.driveId or driveId,
+            itemId=item.itemId,
+            fileName=item.name,
+            requestedFileName=requested,
+            renamed=bool(item.name) and item.name != requested,
+            webUrl=item.webUrl,
+            size=item.size,
+            macroEnabled=extension == ".xlsm",
         )
 
     async def get_inline_images(
@@ -3024,6 +3156,20 @@ class MicrosoftGraphClient:
 
     def _is_spreadsheet_attachment(self, attachment: AttachmentInfo) -> bool:
         return workbook_reader.is_spreadsheet(attachment.name, attachment.contentType)
+
+    @staticmethod
+    def _uploadable_workbook_extension(attachment: AttachmentInfo) -> str | None:
+        name = (attachment.name or "").lower()
+        for extension in UPLOADABLE_WORKBOOK_TYPES:
+            if name.endswith(extension):
+                return extension
+        if name.endswith(workbook_reader.SPREADSHEET_EXTENSIONS):
+            return None  # a template, named as one
+        content_type = (attachment.contentType or "").split(";")[0].strip().lower()
+        for extension, mime in UPLOADABLE_WORKBOOK_TYPES.items():
+            if content_type == mime.lower():
+                return extension
+        return None
 
     def _is_legacy_spreadsheet_attachment(self, attachment: AttachmentInfo) -> bool:
         return workbook_reader.is_legacy_spreadsheet(

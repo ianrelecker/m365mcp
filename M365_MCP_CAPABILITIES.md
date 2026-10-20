@@ -56,7 +56,7 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - `mail_get_attachment_content` returns content for small text-like files and extracts text from small PDFs. Text longer than `maxChars` comes back cut to that length with `truncated: true` and no `unsupportedReason`, so the partial text is usable as is.
 - Excel attachments are read with `mail_get_attachment_workbook` (see Excel Workbooks).
 - Large, binary, item, or reference attachments return metadata with `unsupportedReason`.
-- The server does not save attachments to disk.
+- The server does not save attachments to disk. To recalculate or edit an Excel attachment, copy it into SharePoint/OneDrive with `mail_copy_attachment_to_sharepoint` (see Excel Workbooks).
 
 ## PDFs
 
@@ -71,7 +71,7 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 
 ## Excel Workbooks
 
-- `mail_get_attachment_workbook` reads an `.xlsx` or `.xlsm` attachment in place; nothing is saved to disk or uploaded to OneDrive.
+- `mail_get_attachment_workbook` reads an `.xlsx` or `.xlsm` attachment in place; nothing is saved to disk or uploaded to OneDrive. It cannot recalculate. When the screening needs recalculated outputs, or inputs changed and outputs read back, use `mail_copy_attachment_to_sharepoint` instead (below).
 - Work in two steps:
   1. Call it with no `ranges` and no `sheet`. It returns every sheet (`name`, `visibility` — including `hidden` and `veryHidden` sheets — and `dimensions`, the used range measured from non-empty cells) plus `definedNameCount`, the number of usable defined names. No cells and no name list are returned, so this is cheap.
   2. Call it again with `ranges` for only the cells that matter, e.g. `["'Unit Mix'!A1:H40", "Assumptions!B2:C30", "PurchasePrice"]`. Several ranges come back in one call, in order. Calls that request cells (`ranges` or `sheet`) leave `sheets` and `definedNames` empty, because a large model's layout can be tens of thousands of characters. Keep the layout from step 1 rather than asking for it again; pass `includeLayout: true` only if you truly need it alongside cells.
@@ -86,6 +86,18 @@ This MCP server gives Claude local delegated access to one Microsoft 365 account
 - Measuring a very large sheet's used range stops after 5 million cells or 10 seconds. The sheet is then marked `extentIncomplete: true`, its `dimensions` may stop short, and a whole-sheet, whole-row, or whole-column read of it is marked `truncated: true`. Read such a sheet with explicit addresses. Attachments over `maxBytes` (default 10 MB, capped at 25 MB) are refused, and the download stops as soon as it passes that size.
 - Legacy `.xls`, binary `.xlsb`, password-protected, and damaged workbooks return `unsupportedReason`, as do files that inflate far beyond their size (zip bombs) or carry an XML DTD, which Excel never writes. `.csv` attachments are text: read them with `mail_get_attachment_content`.
 - Charts, pictures, pivot-table layout, conditional formatting, and merged-cell layout are not returned — only cell contents.
+
+### Copying an attachment to SharePoint to recalculate it
+
+- `mail_copy_attachment_to_sharepoint` uploads an `.xlsx` or `.xlsm` attachment as a new file in a SharePoint or OneDrive folder and returns its `driveId` + `itemId`. Those go straight into the workbook tools, so Excel itself recalculates the model: `workbook_create_session` (`persistChanges=true`) → `workbook_calculate` → `workbook_get_ranges` → `workbook_close_session`.
+- Name the folder by `driveId` plus either `folderItemId` or `folderPath` (relative to the library root, e.g. `Shared Active Deals/4. Claude Projects/Email Screening/Excel Saves`). Find the `driveId` once with `sharepoint_get_item_by_url` on any link into the library, or `sharepoint_list_drives`, and reuse it.
+- It never overwrites. If the folder already holds the name, Graph saves it under a new one (e.g. `Deal Model 1.xlsx`), `renamed` is `true`, and `fileName` is the name actually used. Use the returned `itemId` rather than looking the file up by name.
+- The name is the attachment's, or `fileName` when given, with characters SharePoint refuses replaced by `_`; it always keeps the attachment's extension, and a `fileName` with a different spreadsheet extension is an error.
+- `macroEnabled: true` marks an `.xlsm`. Macros never run in the workbook tools, but would for anyone who opens the file in desktop Excel, so mention it when the copy lands in a shared folder.
+- Legacy `.xls`/`.xlsb` and templates (`.xltx`/`.xltm`) are refused because the Workbook API cannot open them. So are attachments over `maxBytes` (default and cap 25 MB); the download stops once it passes that size.
+- Nothing is saved on the local disk by this server. The file appears on a computer only where OneDrive syncs that library, after OneDrive catches up. Read it through the workbook tools rather than waiting for the sync.
+- A just-uploaded file can briefly refuse a workbook session; if `workbook_create_session` fails right after the copy, wait a few seconds and try once more.
+- The copy stays in SharePoint. This server cannot delete files, so tell the user where it went when it is no longer needed.
 
 ## Pictures
 
