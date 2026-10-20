@@ -331,6 +331,8 @@ async def test_upload_surfaces_graph_errors() -> None:
         ("tab\tname.xlsx", "tab_name.xlsx"),
         ("", "attachment.xlsx"),
         ("...", "attachment.xlsx"),
+        ("Deal Model.xlsx ", "Deal Model.xlsx"),
+        ("Deal Model.xlsx.", "Deal Model.xlsx"),
     ],
 )
 def test_safe_drive_item_name(name: str, expected: str) -> None:

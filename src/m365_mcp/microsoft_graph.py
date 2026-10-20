@@ -1375,7 +1375,7 @@ class MicrosoftGraphClient:
             f"/attachments/{quote(attachmentId, safe='')}"
         )
         metadata = await self._request(
-            f"{attachment_path}?$select={WORKBOOK_ATTACHMENT_SELECT}"
+            f"{attachment_path}?$select={ATTACHMENT_METADATA_SELECT}"
         )
         attachment = self._map_attachment(metadata)
 
@@ -1407,7 +1407,7 @@ class MicrosoftGraphClient:
                 "tools; use mail_get_attachment_workbook to read one"
             )
         if fileName is not None:
-            lowered = fileName.strip().lower()
+            lowered = fileName.strip(" .").lower()
             other = next(
                 (
                     suffix

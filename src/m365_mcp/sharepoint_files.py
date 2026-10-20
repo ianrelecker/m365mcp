@@ -859,6 +859,9 @@ def safe_drive_item_name(name: str, *, extension: str) -> str:
     caller cannot turn an ``.xlsm`` into an ``.xlsx`` or anything else.
     """
     base = re.split(r"[\\/]", name or "")[-1]
+    # Trim first, so "Model.xlsx " is not taken as a stem and given a
+    # second extension.
+    base = base.strip(" .")
     if base.lower().endswith(extension.lower()):
         base = base[: -len(extension)]
     stem = _INVALID_NAME_CHARS.sub("_", base)
