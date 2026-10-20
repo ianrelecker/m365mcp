@@ -1075,27 +1075,21 @@ class MicrosoftGraphClient:
                         "PDF did not contain extractable text; scanned PDFs need OCR"
                     ),
                 )
-            truncated = len(content) > maxChars
-            return MailAttachmentContentResult(
-                mailbox=normalized_mailbox or "me",
-                messageId=messageId,
-                attachment=attachment,
-                content=content[:maxChars],
-                encoding="pdf-text",
-                truncated=truncated,
-                unsupportedReason=(
-                    f"Extracted PDF text exceeds maxChars={maxChars}"
-                    if truncated
-                    else None
-                ),
-            )
+            encoding = "pdf-text"
+        else:
+            content = content_bytes.decode("utf-8", errors="replace")
+            encoding = "utf-8"
 
+        # Text cut at maxChars is a partial read, not a failure: it is flagged
+        # by truncated alone, as sharepoint_get_file_content does, so callers
+        # that treat any unsupportedReason as an error keep the text.
         return MailAttachmentContentResult(
             mailbox=normalized_mailbox or "me",
             messageId=messageId,
             attachment=attachment,
-            content=content_bytes.decode("utf-8", errors="replace"),
-            encoding="utf-8",
+            content=content[:maxChars],
+            encoding=encoding,
+            truncated=len(content) > maxChars,
         )
 
     async def get_attachment_image(

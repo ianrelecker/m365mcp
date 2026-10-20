@@ -1757,7 +1757,8 @@ async def test_pdf_attachment_text_extraction(monkeypatch: pytest.MonkeyPatch) -
     assert content.encoding == "pdf-text"
     assert content.content == "--- Page 1 ---\nFirst"
     assert content.truncated is True
-    assert "maxChars=20" in content.unsupportedReason
+    # A cut is a partial read, not a failure.
+    assert content.unsupportedReason is None
 
     await client.aclose()
 
@@ -3620,5 +3621,46 @@ async def test_attachment_download_refuses_oversized_content_length() -> None:
     )
     assert result.unsupportedReason == "Attachment content exceeds maxBytes=1000"
     assert result.truncated is True
+
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_text_attachment_is_cut_at_max_chars() -> None:
+    text = b"abcdefghijklmnopqrstuvwxyz"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Serves both the inline contentBytes and /$value, so the test does not
+        # depend on which of the two the download takes.
+        if request.url.path.endswith("/messages/msg-1/attachments/txt-1/$value"):
+            return httpx.Response(200, content=text)
+        if request.url.path.endswith("/messages/msg-1/attachments/txt-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "txt-1",
+                    "name": "notes.txt",
+                    "contentType": "text/plain",
+                    "size": len(text),
+                    "contentBytes": base64.b64encode(text).decode("ascii"),
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    graph = MicrosoftGraphClient(StaticAuthService(), client)
+
+    cut = await graph.get_attachment_content(
+        messageId="msg-1", attachmentId="txt-1", maxChars=10
+    )
+    assert cut.content == "abcdefghij"
+    assert cut.encoding == "utf-8"
+    assert cut.truncated is True
+    assert cut.unsupportedReason is None
+
+    whole = await graph.get_attachment_content(messageId="msg-1", attachmentId="txt-1")
+    assert whole.content == "abcdefghijklmnopqrstuvwxyz"
+    assert whole.truncated is False
 
     await client.aclose()
