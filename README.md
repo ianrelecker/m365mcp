@@ -14,7 +14,7 @@ Claude can:
 - Look at PDF attachments page by page — rendered to images, so invoices, tables, charts, signatures, and scanned documents are readable without OCR.
 - Read cells from Excel (.xlsx/.xlsm) attachments — sheet list, named ranges, values, and optionally formulas — without saving the file anywhere.
 - Copy an Excel attachment into a SharePoint or OneDrive folder so the workbook tools can recalculate and edit it (never overwrites an existing file).
-- Draft or send mail, reply in threads, move messages, and mark messages read/unread.
+- Draft mail, reply in threads, move messages, and mark messages read/unread. Sending is off by default; enable it only if you also grant `Mail.Send`.
 - Create, rename, delete, and navigate mail folders and subfolders.
 - List, create, update, and delete Outlook Inbox rules.
 - Search, create, update, and delete contacts.
@@ -79,8 +79,8 @@ Add these delegated Microsoft Graph permissions:
 
 - `Mail.ReadWrite`
 - `Mail.ReadWrite.Shared`
-- `Mail.Send`
-- `Mail.Send.Shared`
+- `Mail.Send` (only if you set `M365_MAIL_SEND_ENABLED=true`)
+- `Mail.Send.Shared` (only if you set `M365_MAIL_SEND_ENABLED=true`)
 - `Calendars.ReadWrite.Shared`
 - `Contacts.ReadWrite.Shared`
 - `MailboxSettings.ReadWrite`
@@ -108,6 +108,8 @@ Important fields:
 - `KNOWN_MAILBOXES`: optional comma-separated shared mailboxes, such as `shared@company.com`.
 - `M365_AUDIT_LOG_ENABLED`: optional. Defaults to `true`.
 - `M365_AUDIT_LOG_FILE`: optional. Defaults to `.audit/m365-mcp-audit.jsonl`.
+- `M365_MAIL_SEND_ENABLED`: optional. Defaults to `false`. When false, the server does not request `Mail.Send` / `Mail.Send.Shared` and does not register send tools. Draft tools stay available.
+- `M365_PID_SAFE_MODE`: optional. Defaults to `false`. When true, mailbox and SharePoint/Excel access is fail-closed unless allowlisted (an empty mailbox allowlist blocks all mail, including the signed-in user), blocklisted investor locations and sensitivity labels are denied, image/PDF-page tools are blocked, and SSN/tax-ID patterns are redacted from returned text.
 
 Generate `TOKEN_ENCRYPTION_KEY` with:
 
@@ -231,6 +233,8 @@ http://localhost:8787/
 
 Sign in with the Microsoft 365 account Claude should use. After sign-in, tokens are stored locally at `.tokens/microsoft-graph-token.json`, encrypted with `TOKEN_ENCRYPTION_KEY`.
 
+If you previously connected with `Mail.Send` in the token and then leave sending disabled, reconnect so the new token no longer includes send scopes.
+
 If Claude says it is not authenticated, or `auth_status` shows missing scopes, return to the local helper page and click **Connect Microsoft 365** again to reconnect:
 
 ```text
@@ -341,8 +345,8 @@ Mail and folders:
 - `mail_get_messages`
 - `mail_list_drafts`
 - `mail_create_draft`
-- `mail_send`
-- `mail_send_draft`
+- `mail_send` (only when `M365_MAIL_SEND_ENABLED=true`)
+- `mail_send_draft` (only when `M365_MAIL_SEND_ENABLED=true`)
 - `mail_move`
 - `mail_list_folders`
 - `mail_folder_tree`
@@ -362,7 +366,7 @@ Attachments, threads, categories, and rules:
 - `mail_copy_attachment_to_sharepoint`
 - `mail_get_thread`
 - `mail_create_reply_draft`
-- `mail_send_reply`
+- `mail_send_reply` (only when `M365_MAIL_SEND_ENABLED=true`)
 - `mail_list_categories`
 - `mail_set_categories`
 - `mail_add_categories`

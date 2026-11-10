@@ -60,6 +60,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from .microsoft_auth import MicrosoftAuthService
+from .pid_policy import Location, PidPolicy, labels_from_graph
 
 GRAPH_V1 = "https://graph.microsoft.com/v1.0"
 
@@ -267,9 +268,11 @@ class ExcelWorkbookClient:
         self,
         auth_service: MicrosoftAuthService,
         http_client: httpx.AsyncClient | None = None,
+        pid_policy: PidPolicy | None = None,
     ) -> None:
         self._auth_service = auth_service
         self._http_client = http_client
+        self._pid_policy = pid_policy or PidPolicy.disabled()
 
     # ---- public API ------------------------------------------------------- #
     async def resolve_workbook(
@@ -295,35 +298,55 @@ class ExcelWorkbookClient:
                 "?$select=id,name,webUrl,parentReference"
             )
             parent = data.get("parentReference") or {}
-            return WorkbookItemRef(
+            item = WorkbookItemRef(
                 driveId=str(parent.get("driveId")),
                 itemId=str(data["id"]),
                 name=data.get("name"),
                 webUrl=data.get("webUrl"),
             )
+            await self._require_item(
+                item,
+                path=parent.get("path"),
+                labels=labels_from_graph(data),
+            )
+            return item
         if driveId and itemId:
             data = await self._request(
                 f"/drives/{quote(driveId, safe='')}/items/{quote(itemId, safe='')}"
-                "?$select=id,name,webUrl"
+                "?$select=id,name,webUrl,parentReference"
             )
-            return WorkbookItemRef(
+            parent = data.get("parentReference") or {}
+            item = WorkbookItemRef(
                 driveId=driveId,
                 itemId=str(data["id"]),
                 name=data.get("name"),
                 webUrl=data.get("webUrl"),
             )
+            await self._require_item(
+                item,
+                path=parent.get("path") or itemPath,
+                labels=labels_from_graph(data),
+            )
+            return item
         if driveId and itemPath:
             path = itemPath.strip("/")
             data = await self._request(
                 f"/drives/{quote(driveId, safe='')}/root:/{quote(path)}:"
-                "?$select=id,name,webUrl"
+                "?$select=id,name,webUrl,parentReference"
             )
-            return WorkbookItemRef(
+            parent = data.get("parentReference") or {}
+            item = WorkbookItemRef(
                 driveId=driveId,
                 itemId=str(data["id"]),
                 name=data.get("name"),
                 webUrl=data.get("webUrl"),
             )
+            await self._require_item(
+                item,
+                path=parent.get("path") or path,
+                labels=labels_from_graph(data),
+            )
+            return item
         raise ValueError(
             "Provide shareUrl, or driveId+itemId, or driveId+itemPath"
         )
@@ -332,7 +355,7 @@ class ExcelWorkbookClient:
         self, item: WorkbookItemRef, *, sessionId: str | None = None
     ) -> WorkbookListWorksheetsResult:
         data = await self._request(
-            f"{self._wb_base(item)}/worksheets?$select=id,name,position,visibility",
+            f"{await self._wb_base(item)}/worksheets?$select=id,name,position,visibility",
             sessionId=sessionId,
         )
         return WorkbookListWorksheetsResult(
@@ -357,10 +380,10 @@ class ExcelWorkbookClient:
     ) -> WorkbookListTablesResult:
         if worksheet:
             path = (
-                f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')/tables"
+                f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')/tables"
             )
         else:
-            path = f"{self._wb_base(item)}/tables"
+            path = f"{await self._wb_base(item)}/tables"
         data = await self._request(
             f"{path}?$select=id,name,showHeaders", sessionId=sessionId
         )
@@ -393,7 +416,7 @@ class ExcelWorkbookClient:
         if index is not None:
             body["index"] = index
         data = await self._request(
-            f"{self._wb_base(item)}/tables/{self._q(table)}/rows/add",
+            f"{await self._wb_base(item)}/tables/{self._q(table)}/rows/add",
             method="POST",
             json_body=body,
             sessionId=sessionId,
@@ -416,7 +439,7 @@ class ExcelWorkbookClient:
         """Read a range like 'A1:O5'. Returns raw values, display text, the
         cell formulas, and number formats."""
         data = await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')"
             "?$select=address,values,text,formulas,numberFormat,rowCount,columnCount",
             sessionId=sessionId,
@@ -425,9 +448,9 @@ class ExcelWorkbookClient:
             item=item,
             worksheet=worksheet,
             address=data.get("address", address),
-            values=data.get("values", []),
-            text=data.get("text"),
-            formulas=data.get("formulas"),
+            values=self._pid_policy.redact_grid(data.get("values", [])) or [],
+            text=self._pid_policy.redact_grid(data.get("text")),
+            formulas=self._pid_policy.redact_grid(data.get("formulas")),
             numberFormat=data.get("numberFormat"),
             rowCount=data.get("rowCount"),
             columnCount=data.get("columnCount"),
@@ -443,7 +466,7 @@ class ExcelWorkbookClient:
     ) -> WorkbookRangeResult:
         suffix = "(valuesOnly=true)" if valuesOnly else ""
         data = await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/usedRange{suffix}"
             "?$select=address,values,text,formulas,numberFormat,rowCount,columnCount",
             sessionId=sessionId,
@@ -452,9 +475,9 @@ class ExcelWorkbookClient:
             item=item,
             worksheet=worksheet,
             address=data.get("address", ""),
-            values=data.get("values", []),
-            text=data.get("text"),
-            formulas=data.get("formulas"),
+            values=self._pid_policy.redact_grid(data.get("values", [])) or [],
+            text=self._pid_policy.redact_grid(data.get("text")),
+            formulas=self._pid_policy.redact_grid(data.get("formulas")),
             numberFormat=data.get("numberFormat"),
             rowCount=data.get("rowCount"),
             columnCount=data.get("columnCount"),
@@ -485,7 +508,7 @@ class ExcelWorkbookClient:
         if not body:
             raise ValueError("Provide values, formulas, and/or numberFormat to update")
         await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')",
             method="PATCH",
             json_body=body,
@@ -503,7 +526,7 @@ class ExcelWorkbookClient:
         calls to batch them consistently. persistChanges=True writes to the
         stored file; False is a scratch/read session."""
         data = await self._request(
-            f"{self._wb_base(item)}/createSession",
+            f"{await self._wb_base(item)}/createSession",
             method="POST",
             json_body={"persistChanges": persistChanges},
         )
@@ -517,7 +540,7 @@ class ExcelWorkbookClient:
         self, item: WorkbookItemRef, *, sessionId: str
     ) -> None:
         await self._request(
-            f"{self._wb_base(item)}/closeSession",
+            f"{await self._wb_base(item)}/closeSession",
             method="POST",
             sessionId=sessionId,
         )
@@ -538,12 +561,13 @@ class ExcelWorkbookClient:
         without failing the rest of the batch. Auto-chunked to <=20 requests
         per batch call."""
         specs = [self._range_spec(r, i) for i, r in enumerate(ranges)]
+        base = await self._wb_base(item)
         requests = [
             {
                 "id": str(i),
                 "method": "GET",
                 "url": (
-                    f"{self._wb_base(item)}/worksheets('{self._q(ws)}')"
+                    f"{base}/worksheets('{self._q(ws)}')"
                     f"/range(address='{self._q(addr)}')"
                     "?$select=address,values,formulas,text,numberFormat"
                 ),
@@ -554,7 +578,16 @@ class ExcelWorkbookClient:
         out: list[WorkbookRangeData] = []
         for i, (ws, addr) in enumerate(specs):
             resp = responses.get(str(i))
-            out.append(self._read_range_response(ws, addr, resp))
+            result = self._read_range_response(ws, addr, resp)
+            out.append(
+                result.model_copy(
+                    update={
+                        "values": self._pid_policy.redact_grid(result.values),
+                        "text": self._pid_policy.redact_grid(result.text),
+                        "formulas": self._pid_policy.redact_grid(result.formulas),
+                    }
+                )
+            )
         return WorkbookRangesResult(item=item, ranges=out)
 
     async def update_ranges(
@@ -590,12 +623,13 @@ class ExcelWorkbookClient:
                     "and/or numberFormat"
                 )
             prepared.append((ws, addr, body))
+        base = await self._wb_base(item)
         requests = [
             {
                 "id": str(i),
                 "method": "PATCH",
                 "url": (
-                    f"{self._wb_base(item)}/worksheets('{self._q(ws)}')"
+                    f"{base}/worksheets('{self._q(ws)}')"
                     f"/range(address='{self._q(addr)}')"
                 ),
                 "body": body,
@@ -633,7 +667,7 @@ class ExcelWorkbookClient:
                 f"calculationType must be one of {sorted(allowed)}"
             )
         await self._request(
-            f"{self._wb_base(item)}/application/calculate",
+            f"{await self._wb_base(item)}/application/calculate",
             method="POST",
             json_body={"calculationType": calculationType},
             sessionId=sessionId,
@@ -654,10 +688,10 @@ class ExcelWorkbookClient:
         omitted; worksheet-scoped names when it is given."""
         if worksheet:
             path = (
-                f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')/names"
+                f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')/names"
             )
         else:
-            path = f"{self._wb_base(item)}/names"
+            path = f"{await self._wb_base(item)}/names"
         data = await self._request(
             f"{path}?$select=name,value,comment,scope,type,visible",
             sessionId=sessionId,
@@ -691,11 +725,11 @@ class ExcelWorkbookClient:
         one."""
         if worksheet:
             base = (
-                f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+                f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
                 f"/names('{self._q(name)}')/range"
             )
         else:
-            base = f"{self._wb_base(item)}/names('{self._q(name)}')/range"
+            base = f"{await self._wb_base(item)}/names('{self._q(name)}')/range"
         data = await self._request(
             f"{base}?$select=address,values,text,formulas,numberFormat",
             sessionId=sessionId,
@@ -704,9 +738,9 @@ class ExcelWorkbookClient:
             item=item,
             name=name,
             address=data.get("address", ""),
-            values=data.get("values", []),
-            text=data.get("text"),
-            formulas=data.get("formulas"),
+            values=self._pid_policy.redact_grid(data.get("values", [])) or [],
+            text=self._pid_policy.redact_grid(data.get("text")),
+            formulas=self._pid_policy.redact_grid(data.get("formulas")),
             numberFormat=data.get("numberFormat"),
         )
 
@@ -726,7 +760,7 @@ class ExcelWorkbookClient:
         if applyTo not in allowed:
             raise ValueError(f"applyTo must be one of {sorted(allowed)}")
         await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')/clear",
             method="POST",
             json_body={"applyTo": applyTo},
@@ -753,7 +787,7 @@ class ExcelWorkbookClient:
         if copyType not in allowed:
             raise ValueError(f"copyType must be one of {sorted(allowed)}")
         await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')/copyFrom",
             method="POST",
             json_body={"sourceRange": sourceRange, "copyType": copyType},
@@ -782,7 +816,7 @@ class ExcelWorkbookClient:
         if shift not in allowed:
             raise ValueError(f"shift must be one of {sorted(allowed)}")
         await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')/insert",
             method="POST",
             json_body={"shift": shift},
@@ -811,7 +845,7 @@ class ExcelWorkbookClient:
         if shift not in allowed:
             raise ValueError(f"shift must be one of {sorted(allowed)}")
         await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')/delete",
             method="POST",
             json_body={"shift": shift},
@@ -836,7 +870,7 @@ class ExcelWorkbookClient:
         ``hasHeaders=True`` treats the first row as column headers. Returns the
         created table's id and name for use with the other table tools."""
         data = await self._request(
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')/tables/add",
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')/tables/add",
             method="POST",
             json_body={"address": address, "hasHeaders": hasHeaders},
             sessionId=sessionId,
@@ -870,7 +904,7 @@ class ExcelWorkbookClient:
                 "Provide at least one sort field, e.g. {'key': 0, 'ascending': True}."
             )
         await self._request(
-            f"{self._wb_base(item)}/tables/{self._q(table)}/sort/apply",
+            f"{await self._wb_base(item)}/tables/{self._q(table)}/sort/apply",
             method="POST",
             json_body={"fields": fields, "matchCase": matchCase},
             sessionId=sessionId,
@@ -892,7 +926,7 @@ class ExcelWorkbookClient:
         or ``{"filterOn": "custom", "criterion1": ">100", "operator": "And"}``.
         Use ``clear_table_filters`` to remove filters afterwards."""
         await self._request(
-            f"{self._wb_base(item)}/tables/{self._q(table)}"
+            f"{await self._wb_base(item)}/tables/{self._q(table)}"
             f"/columns('{self._q(column)}')/filter/apply",
             method="POST",
             json_body={"criteria": criteria},
@@ -909,7 +943,7 @@ class ExcelWorkbookClient:
     ) -> WorkbookTableClearFiltersResult:
         """Clear all column filters on a table, restoring every row to view."""
         await self._request(
-            f"{self._wb_base(item)}/tables/{self._q(table)}/clearFilters",
+            f"{await self._wb_base(item)}/tables/{self._q(table)}/clearFilters",
             method="POST",
             sessionId=sessionId,
         )
@@ -947,7 +981,7 @@ class ExcelWorkbookClient:
         Number formats are set via ``update_range``. Issues one Graph PATCH per
         sub-property changed; at least one property must be provided."""
         base = (
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(address)}')/format"
         )
         did_any = False
@@ -1028,7 +1062,7 @@ class ExcelWorkbookClient:
         ``A:C``. Pass ``width`` (in points) to set a fixed width, or
         ``autofit=True`` to size columns to their content."""
         base = (
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(columns)}')/format"
         )
         if autofit:
@@ -1060,7 +1094,7 @@ class ExcelWorkbookClient:
         ``1:10``. Pass ``height`` (in points) to set a fixed height, or
         ``autofit=True`` to size rows to their content."""
         base = (
-            f"{self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
+            f"{await self._wb_base(item)}/worksheets('{self._q(worksheet)}')"
             f"/range(address='{self._q(rows)}')/format"
         )
         if autofit:
@@ -1103,8 +1137,56 @@ class ExcelWorkbookClient:
         worksheets('Name') or range(address='A1')."""
         return value.replace("'", "''")
 
-    @staticmethod
-    def _wb_base(item: WorkbookItemRef) -> str:
+    async def _extract_labels(self, drive_id: str, item_id: str) -> tuple[str, ...]:
+        try:
+            data = await self._request(
+                f"/drives/{quote(drive_id, safe='')}/items/"
+                f"{quote(item_id, safe='')}/extractSensitivityLabels",
+                method="POST",
+            )
+        except RuntimeError:
+            return ()
+        return labels_from_graph(data if isinstance(data, dict) else None)
+
+    async def _require_item(
+        self,
+        item: WorkbookItemRef,
+        *,
+        path: str | None = None,
+        labels: tuple[str, ...] = (),
+    ) -> None:
+        resolved_path = path
+        resolved_url = item.webUrl
+        resolved_labels = labels
+        if (
+            self._pid_policy.enabled
+            and self._pid_policy.needs_item_metadata()
+            and item.driveId
+            and item.itemId
+            and (not resolved_path or not resolved_labels)
+        ):
+            data = await self._request(
+                f"/drives/{quote(item.driveId, safe='')}/items/"
+                f"{quote(item.itemId, safe='')}"
+                "?$select=id,webUrl,parentReference"
+            )
+            parent = data.get("parentReference") or {}
+            resolved_path = resolved_path or parent.get("path")
+            resolved_url = resolved_url or data.get("webUrl")
+            if self._pid_policy.blocked_sensitivity_labels and not resolved_labels:
+                resolved_labels = await self._extract_labels(item.driveId, item.itemId)
+        self._pid_policy.require_location(
+            Location(
+                drive_id=item.driveId,
+                item_id=item.itemId,
+                path=resolved_path,
+                web_url=resolved_url,
+                labels=resolved_labels,
+            )
+        )
+
+    async def _wb_base(self, item: WorkbookItemRef) -> str:
+        await self._require_item(item)
         return (
             f"/drives/{quote(item.driveId, safe='')}"
             f"/items/{quote(item.itemId, safe='')}/workbook"

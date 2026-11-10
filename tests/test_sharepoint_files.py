@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 
+from m365_mcp.pid_policy import BlockedError, PidPolicy
 from m365_mcp.sharepoint_files import SharePointFilesClient
 
 
@@ -1045,4 +1046,38 @@ async def test_get_file_content_stops_reading_word_at_max_chars() -> None:
     assert result.truncated is True
     assert len(result.content) == 100
     assert result.content.startswith("Paragraph 0 ")
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_pid_safe_mode_blocks_non_allowlisted_drive() -> None:
+    client, http_client = _make_client(lambda request: httpx.Response(500))
+    client._pid_policy = PidPolicy(
+        enabled=True,
+        drive_allowlist=["drive-ok"],
+        location_blocklist=["investor-pid"],
+    )
+    with pytest.raises(BlockedError) as blocked:
+        await client.list_children(driveId="drive-blocked")
+    assert blocked.value.reason in {
+        "location_not_allowlisted",
+        "location_blocklisted",
+    }
+    with pytest.raises(BlockedError) as blocked:
+        await client.list_children(driveId="drive-ok", path="Funds/investor-pid")
+    assert blocked.value.reason == "location_blocklisted"
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_pid_safe_mode_blocks_when_sensitivity_lookup_fails() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/extractSensitivityLabels")
+        return httpx.Response(503, json={"error": {"message": "unavailable"}})
+
+    client, http_client = _make_client(handler)
+    client._pid_policy = PidPolicy(enabled=True, blocked_sensitivity_labels=["confidential"])
+    with pytest.raises(BlockedError) as blocked:
+        await client._extract_labels("drive-1", "item-1")
+    assert blocked.value.reason == "sensitivity_label_unknown"
     await http_client.aclose()

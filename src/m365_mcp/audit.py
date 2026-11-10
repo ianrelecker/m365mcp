@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from m365_mcp.pid_policy import BlockedError
+
 
 ID_FIELDS = {
     "attachmentId",
@@ -165,6 +167,8 @@ class LocalAuditLogger:
                 "type": error.__class__.__name__,
                 "message": redact_error_message(str(error), arguments),
             }
+            if isinstance(error, BlockedError):
+                record["reason"] = error.reason
 
         parent = self._file_path.parent
         parent.mkdir(parents=True, exist_ok=True)

@@ -24,6 +24,8 @@ class MicrosoftConnectionStatus(AppModel):
     requiredScopes: list[str] = Field(default_factory=list)
     grantedScopes: list[str] = Field(default_factory=list)
     missingScopes: list[str] = Field(default_factory=list)
+    mailSendEnabled: bool = False
+    pidSafeMode: bool = False
 
 
 class AuthStatusResult(MicrosoftConnectionStatus):

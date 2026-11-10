@@ -87,6 +87,7 @@ from .models import (
     SkippedAttachment,
 )
 from .microsoft_auth import MicrosoftAuthService
+from .pid_policy import PidPolicy
 from .sharepoint_files import safe_drive_item_name
 from . import workbook_reader
 from .workbook_reader import (
@@ -297,9 +298,12 @@ class MicrosoftGraphClient:
         self,
         auth_service: MicrosoftAuthService,
         http_client: httpx.AsyncClient | None = None,
+        pid_policy: PidPolicy | None = None,
     ) -> None:
         self._auth_service = auth_service
         self._http_client = http_client
+        self._pid_policy = pid_policy or PidPolicy.disabled()
+        self._signed_in_upn_cache: str | None | bool = False
 
     @asynccontextmanager
     async def _client(self) -> Any:
@@ -338,7 +342,7 @@ class MicrosoftGraphClient:
             raise ValueError("receivedAfter must be earlier than receivedBefore")
         received_after = after[0] if after else None
         received_before = before[0] if before else None
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         resolved_folder_id = folderId
         resolved_folder_path = folderPath
@@ -414,7 +418,7 @@ class MicrosoftGraphClient:
         includeRead: bool = False,
         inferenceClassification: str | None = None,
     ) -> MailCheckInboxResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         folder_info = (
             await self._get_mail_folder(base, folderId)
@@ -443,7 +447,7 @@ class MicrosoftGraphClient:
         query: str,
         top: int = 10,
     ) -> MailSearchResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         escaped_query = query.replace('"', '\\"')
         params = httpx.QueryParams(
@@ -472,7 +476,7 @@ class MicrosoftGraphClient:
         bodyFormat: str = "text",
         bodyScope: str = "new",
     ) -> MailGetResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         prefer = self._message_body_prefer(bodyFormat)
         self._validate_body_scope(bodyScope)
@@ -553,7 +557,7 @@ class MicrosoftGraphClient:
         mailbox: str | None = None,
         top: int = 25,
     ) -> MailListDraftsResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         params = httpx.QueryParams(
             {
@@ -579,7 +583,7 @@ class MicrosoftGraphClient:
         bodyType: str = "text",
         from_: str | None = None,
     ) -> MailCreateDraftResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
 
         message = await self._request(
@@ -624,7 +628,7 @@ class MicrosoftGraphClient:
         from_: str | None = None,
         saveToSentItems: bool = True,
     ) -> MailSendResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         await self._request(
             f"{base}/sendMail",
@@ -659,7 +663,7 @@ class MicrosoftGraphClient:
         mailbox: str | None = None,
         messageId: str,
     ) -> MailSendDraftResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         await self._request(
             f"{base}/messages/{quote(messageId, safe='')}/send",
@@ -682,7 +686,7 @@ class MicrosoftGraphClient:
         destinationFolderId: str | None = None,
         destinationFolderPath: str | None = None,
     ) -> MailMoveResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         if destinationFolderId:
             destination_id = destinationFolderId
@@ -720,7 +724,7 @@ class MicrosoftGraphClient:
         parentFolderId: str | None = None,
         top: int = 100,
     ) -> MailListFoldersResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         folders = await self._list_mail_folder_infos(
             base,
@@ -740,7 +744,7 @@ class MicrosoftGraphClient:
         rootFolderId: str | None = None,
         maxDepth: int = 4,
     ) -> MailFolderTreeResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         depth = max(1, min(maxDepth, 8))
         roots = await self._list_mail_folder_tree(
@@ -764,7 +768,7 @@ class MicrosoftGraphClient:
         parentFolderId: str | None = None,
         displayName: str | None = None,
     ) -> MailResolveFolderResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         if folderPath:
             folder = await self._resolve_mail_folder_by_path(base, folderPath)
@@ -793,7 +797,7 @@ class MicrosoftGraphClient:
         parentFolderPath: str | None = None,
         isHidden: bool | None = None,
     ) -> MailFolderMutationResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         resolved_parent_id = parentFolderId
         if parentFolderPath and not resolved_parent_id:
@@ -823,7 +827,7 @@ class MicrosoftGraphClient:
         folderId: str | None = None,
         folderPath: str | None = None,
     ) -> MailFolderMutationResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         resolved_folder_id = await self._resolve_mail_folder_identifier(
             base,
@@ -847,7 +851,7 @@ class MicrosoftGraphClient:
         folderId: str | None = None,
         folderPath: str | None = None,
     ) -> MailFolderMutationResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         resolved_folder_id = await self._resolve_mail_folder_identifier(
             base,
@@ -870,7 +874,7 @@ class MicrosoftGraphClient:
         mailbox: str | None = None,
         top: int = 100,
     ) -> MailListRulesResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         params = httpx.QueryParams(
             {"$top": str(min(top, 100)), "$select": MESSAGE_RULE_SELECT}
@@ -902,7 +906,7 @@ class MicrosoftGraphClient:
         assignCategories: list[str] | None = None,
         stopProcessingRules: bool | None = None,
     ) -> MailRuleResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         payload = await self._mail_rule_payload(
             base,
@@ -955,7 +959,7 @@ class MicrosoftGraphClient:
         assignCategories: list[str] | None = None,
         stopProcessingRules: bool | None = None,
     ) -> MailRuleResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         payload = await self._mail_rule_payload(
             base,
@@ -994,7 +998,7 @@ class MicrosoftGraphClient:
         mailbox: str | None = None,
         ruleId: str,
     ) -> MailRuleResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         await self._request(
             f"{self._mail_rules_path(base)}/{quote(ruleId, safe='')}",
@@ -1013,7 +1017,7 @@ class MicrosoftGraphClient:
         messageId: str,
         includeInline: bool = False,
     ) -> MailListAttachmentsResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         result = await self._request(
             f"{base}/messages/{quote(messageId, safe='')}/attachments"
@@ -1041,7 +1045,7 @@ class MicrosoftGraphClient:
         maxBytes: int = 1_000_000,
         maxChars: int = 100_000,
     ) -> MailAttachmentContentResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         attachment_path = (
             f"{base}/messages/{quote(messageId, safe='')}"
@@ -1099,7 +1103,7 @@ class MicrosoftGraphClient:
             mailbox=normalized_mailbox or "me",
             messageId=messageId,
             attachment=attachment,
-            content=content[:maxChars],
+            content=self._pid_policy.redact_text(content[:maxChars]),
             encoding=encoding,
             truncated=len(content) > maxChars,
         )
@@ -1112,7 +1116,8 @@ class MicrosoftGraphClient:
         attachmentId: str,
         maxBytes: int = DEFAULT_IMAGE_MAX_BYTES,
     ) -> MailAttachmentImageResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
+        self._pid_policy.require_unredactable_content()
         base = self._base_path(normalized_mailbox)
         attachment_path = (
             f"{base}/messages/{quote(messageId, safe='')}"
@@ -1164,7 +1169,8 @@ class MicrosoftGraphClient:
         maxBytes: int = DEFAULT_PDF_MAX_BYTES,
         maxTotalBytes: int = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
     ) -> MailAttachmentPdfResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
+        self._pid_policy.require_unredactable_content()
         base = self._base_path(normalized_mailbox)
         attachment_path = (
             f"{base}/messages/{quote(messageId, safe='')}"
@@ -1472,7 +1478,8 @@ class MicrosoftGraphClient:
         maxImages: int = DEFAULT_MAX_INLINE_IMAGES,
         includeNonInline: bool = False,
     ) -> MailInlineImagesResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
+        self._pid_policy.require_unredactable_content()
         base = self._base_path(normalized_mailbox)
         listed = await self._request(
             f"{base}/messages/{quote(messageId, safe='')}/attachments"
@@ -1543,7 +1550,7 @@ class MicrosoftGraphClient:
     ) -> MailThreadResult:
         if order not in ("newest", "oldest"):
             raise ValueError('order must be "newest" or "oldest"')
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         resolved_conversation_id = conversationId
         if not resolved_conversation_id:
@@ -1593,7 +1600,7 @@ class MicrosoftGraphClient:
         replyAll: bool = False,
         bodyType: str = "html",
     ) -> MailCreateDraftResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         action = "createReplyAll" if replyAll else "createReply"
         message = await self._request(
@@ -1622,7 +1629,7 @@ class MicrosoftGraphClient:
         replyAll: bool = False,
         bodyType: str = "html",
     ) -> MailSendResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         action = "replyAll" if replyAll else "reply"
         await self._request(
@@ -1649,7 +1656,7 @@ class MicrosoftGraphClient:
         *,
         mailbox: str | None = None,
     ) -> MailListCategoriesResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         result = await self._request(f"{base}/outlook/masterCategories")
         return MailListCategoriesResult(
@@ -1666,7 +1673,7 @@ class MicrosoftGraphClient:
         displayName: str,
         color: str = "preset0",
     ) -> MailCategoryResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         category = await self._request(
             f"{base}/outlook/masterCategories",
@@ -1696,7 +1703,7 @@ class MicrosoftGraphClient:
         if not payload:
             raise ValueError("Provide color to update an Outlook master category.")
 
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         category = await self._request(
             f"{base}/outlook/masterCategories/{quote(categoryId, safe='')}",
@@ -1714,7 +1721,7 @@ class MicrosoftGraphClient:
         mailbox: str | None = None,
         categoryId: str,
     ) -> MailCategoryResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         await self._request(
             f"{base}/outlook/masterCategories/{quote(categoryId, safe='')}",
@@ -1830,7 +1837,7 @@ class MicrosoftGraphClient:
         folderId: str | None = None,
         top: int = 25,
     ) -> ContactsListResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         query_string = _build_contact_read_query(top=min(top, 100))
         result = await self._request(
             f"{self._contacts_path(normalized_mailbox, folderId)}?{query_string}"
@@ -1850,7 +1857,7 @@ class MicrosoftGraphClient:
         top: int = 25,
         maxPages: int = 5,
     ) -> ContactsSearchResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         query_text = query.strip()
         if "@" in query_text and " " not in query_text:
             base_query = _build_contact_read_query(top=min(max(top, 1), 100))
@@ -1898,7 +1905,7 @@ class MicrosoftGraphClient:
         contactId: str,
         folderId: str | None = None,
     ) -> ContactGetResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         path = (
             f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}"
         )
@@ -1928,7 +1935,7 @@ class MicrosoftGraphClient:
         homeAddress: ContactAddress | dict[str, Any] | None = None,
         otherAddress: ContactAddress | dict[str, Any] | None = None,
     ) -> ContactMutationResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         created = await self._request(
             self._contacts_path(normalized_mailbox, folderId),
             method="POST",
@@ -1986,7 +1993,7 @@ class MicrosoftGraphClient:
         homeAddress: ContactAddress | dict[str, Any] | None = None,
         otherAddress: ContactAddress | dict[str, Any] | None = None,
     ) -> ContactMutationResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         contact_path = (
             f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}"
         )
@@ -2025,7 +2032,7 @@ class MicrosoftGraphClient:
         contactId: str,
         folderId: str | None = None,
     ) -> ContactMutationResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         await self._request(
             f"{self._contacts_path(normalized_mailbox, folderId)}/{quote(contactId, safe='')}",
             method="DELETE",
@@ -2119,7 +2126,7 @@ class MicrosoftGraphClient:
         parentFolderId: str | None = None,
         top: int = 100,
     ) -> ContactFoldersResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         path = (
             f"{base}/contactFolders/{quote(parentFolderId, safe='')}/childFolders"
@@ -2146,7 +2153,7 @@ class MicrosoftGraphClient:
         end: str | None = None,
         top: int = 25,
     ) -> CalendarListEventsResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         start_value = start or _utc_now_iso()
         end_value = end or (
             datetime.now(timezone.utc) + timedelta(days=7)
@@ -2181,7 +2188,7 @@ class MicrosoftGraphClient:
         bodyType: str = "text",
         location: str | None = None,
     ) -> CalendarCreateEventResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         path = (
             f"/users/{quote(normalized_mailbox, safe='')}/calendar/events"
             if normalized_mailbox
@@ -2230,7 +2237,7 @@ class MicrosoftGraphClient:
         bodyType: str = "text",
         location: str | None = None,
     ) -> CalendarUpdateEventResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         payload = self._omit_none(
             {
                 "subject": subject,
@@ -2287,7 +2294,7 @@ class MicrosoftGraphClient:
         mailbox: str | None = None,
         eventId: str,
     ) -> CalendarDeleteEventResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         await self._request(
             self._calendar_event_path(normalized_mailbox, eventId),
             method="DELETE",
@@ -2311,7 +2318,7 @@ class MicrosoftGraphClient:
         messageId: str,
         payload: dict[str, Any],
     ) -> MailUpdateMessageResult:
-        normalized_mailbox = self._normalize_mailbox(mailbox)
+        normalized_mailbox = await self._ready_mailbox(mailbox)
         base = self._base_path(normalized_mailbox)
         message = await self._request(
             f"{base}/messages/{quote(messageId, safe='')}",
@@ -2467,9 +2474,33 @@ class MicrosoftGraphClient:
     def _base_path(self, mailbox: str | None) -> str:
         return f"/users/{quote(mailbox, safe='')}" if mailbox else "/me"
 
+    async def _signed_in_upn(self) -> str | None:
+        if self._signed_in_upn_cache is False:
+            upn: str | None = None
+            get_status = getattr(self._auth_service, "get_status", None)
+            if callable(get_status):
+                try:
+                    status = await get_status()
+                    account = getattr(status, "account", None)
+                    upn = getattr(account, "preferredUsername", None) if account else None
+                except Exception:
+                    upn = None
+            self._signed_in_upn_cache = upn
+        return self._signed_in_upn_cache or None
+
+    async def _ready_mailbox(self, mailbox: str | None) -> str | None:
+        if self._pid_policy.enabled and not (mailbox or "").strip():
+            await self._signed_in_upn()
+        return self._normalize_mailbox(mailbox)
+
     def _normalize_mailbox(self, mailbox: str | None) -> str | None:
-        value = (mailbox or "").strip()
-        return value or None
+        value = (mailbox or "").strip() or None
+        identity = value
+        if identity is None and self._pid_policy.enabled:
+            cached = self._signed_in_upn_cache
+            identity = cached if isinstance(cached, str) else None
+        self._pid_policy.require_mailbox(identity)
+        return value
 
     async def _request(
         self,
@@ -3422,13 +3453,15 @@ class MicrosoftGraphClient:
     def _map_message_summary(self, message: dict[str, Any]) -> MessageSummary:
         return MessageSummary(
             id=str(message["id"]),
-            subject=str(message.get("subject") or ""),
+            subject=self._pid_policy.redact_text(str(message.get("subject") or "")),
             from_=self._map_email_address(message.get("from")),
             sender=self._map_email_address(message.get("sender")),
             replyTo=self._map_recipients(message.get("replyTo")),
             receivedDateTime=self._nullable_string(message.get("receivedDateTime")),
             sentDateTime=self._nullable_string(message.get("sentDateTime")),
-            bodyPreview=str(message.get("bodyPreview") or ""),
+            bodyPreview=self._pid_policy.redact_text(
+                str(message.get("bodyPreview") or "")
+            ),
             webLink=self._nullable_string(message.get("webLink")),
             isDraft=bool(message.get("isDraft", False)),
             isRead=(
@@ -3472,7 +3505,7 @@ class MicrosoftGraphClient:
             returned_scope = "new"
         return FullMessage(
             id=str(message["id"]),
-            subject=str(message.get("subject") or ""),
+            subject=self._pid_policy.redact_text(str(message.get("subject") or "")),
             from_=self._map_email_address(message.get("from")),
             sender=self._map_email_address(message.get("sender")),
             replyTo=self._map_recipients(message.get("replyTo")),
@@ -3481,10 +3514,12 @@ class MicrosoftGraphClient:
             bcc=self._map_recipients(message.get("bccRecipients")),
             receivedDateTime=self._nullable_string(message.get("receivedDateTime")),
             sentDateTime=self._nullable_string(message.get("sentDateTime")),
-            bodyPreview=str(message.get("bodyPreview") or ""),
+            bodyPreview=self._pid_policy.redact_text(
+                str(message.get("bodyPreview") or "")
+            ),
             body=MessageBody(
                 contentType=str(body.get("contentType") or "text"),
-                content=str(body.get("content") or ""),
+                content=self._pid_policy.redact_text(str(body.get("content") or "")),
             ),
             bodyScope=returned_scope,
             webLink=self._nullable_string(message.get("webLink")),
@@ -3544,10 +3579,12 @@ class MicrosoftGraphClient:
                 )
                 for attendee in attendees
             ],
-            bodyPreview=str(event.get("bodyPreview") or ""),
+            bodyPreview=self._pid_policy.redact_text(
+                str(event.get("bodyPreview") or "")
+            ),
             body=MessageBody(
                 contentType=str(body.get("contentType") or "text"),
-                content=str(body.get("content") or ""),
+                content=self._pid_policy.redact_text(str(body.get("content") or "")),
             ),
         )
 

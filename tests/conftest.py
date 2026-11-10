@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from m365_mcp.config import AppConfig, MicrosoftConfig
+from m365_mcp.config import AppConfig, MicrosoftConfig, graph_scopes
 
 TEST_KEY = bytes(range(32))
 TEST_KEY_B64 = base64.b64encode(TEST_KEY).decode("ascii")
@@ -48,6 +48,8 @@ def config_factory(
             )
         )
         audit_log_enabled = bool(overrides.pop("auditLogEnabled", True))
+        mail_send_enabled = bool(overrides.pop("mailSendEnabled", False))
+        pid_safe_mode = bool(overrides.pop("pidSafeMode", False))
         microsoft = MicrosoftConfig(
             tenantId=str(overrides.pop("tenantId", "tenant-id")),
             clientId=str(overrides.pop("clientId", "client-id")),
@@ -61,24 +63,26 @@ def config_factory(
             scopes=list(
                 overrides.pop(
                     "scopes",
-                    [
-                        "openid",
-                        "profile",
-                        "email",
-                        "offline_access",
-                        "Mail.ReadWrite",
-                        "Mail.ReadWrite.Shared",
-                        "Mail.Send",
-                        "Mail.Send.Shared",
-                        "Calendars.ReadWrite.Shared",
-                        "Contacts.ReadWrite.Shared",
-                        "MailboxSettings.ReadWrite",
-                        "Sites.Read.All",
-                        "Files.ReadWrite.All",
-                    ],
+                    graph_scopes(mail_send_enabled=mail_send_enabled),
                 )
             ),
         )
+
+        extra = {
+            "pidMailboxAllowlist": list(overrides.pop("pidMailboxAllowlist", [])),
+            "pidMailboxBlocklist": list(overrides.pop("pidMailboxBlocklist", [])),
+            "pidSiteAllowlist": list(overrides.pop("pidSiteAllowlist", [])),
+            "pidDriveAllowlist": list(overrides.pop("pidDriveAllowlist", [])),
+            "pidFolderAllowlist": list(overrides.pop("pidFolderAllowlist", [])),
+            "pidLocationBlocklist": list(overrides.pop("pidLocationBlocklist", [])),
+            "pidBlockedSensitivityLabels": list(
+                overrides.pop("pidBlockedSensitivityLabels", [])
+            ),
+            "pidRedactIdentifiers": bool(overrides.pop("pidRedactIdentifiers", True)),
+            "pidLocalExtractorEnabled": bool(
+                overrides.pop("pidLocalExtractorEnabled", False)
+            ),
+        }
 
         if overrides:
             raise AssertionError(f"Unexpected config overrides: {sorted(overrides)}")
@@ -92,6 +96,9 @@ def config_factory(
             tokenFile=token_file,
             auditLogEnabled=audit_log_enabled,
             auditLogFile=audit_log_file,
+            mailSendEnabled=mail_send_enabled,
+            pidSafeMode=pid_safe_mode,
+            **extra,
         )
 
     return factory
